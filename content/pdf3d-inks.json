@@ -1,5 +1,5 @@
 {
-  "foil": ["foil", "folie", "coldfoil", "koudfolie", "inlinecoldfoil", "inlinekoudfolie", "silver", "zilver", "silverfoil", "zilverfolie", "cf"],
+  "foil": ["foil", "folie", "coldfoil", "koudfolie", "inlinecoldfoil", "inlinekoudfolie", "silver", "zilver", "silverfoil", "zilverfolie", "holo", "holografisch", "holographic", "hologram", "cf"],
   "gold": ["gold", "goud", "goldfoil", "goudfolie"],
   "spotuv": ["spotuv", "uvspot", "uv", "uvlak", "uvvernis", "spotvarnish", "varnish", "vernis", "lak", "lack"],
   "emboss": ["emboss", "embossing", "preeg", "preging", "blindpreeg", "blinddruk", "relief", "reliëf"],

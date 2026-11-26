@@ -161,6 +161,8 @@ export type Look = { foil: { value: number }; paper: { value: number }; uv: { va
 // foil and paper: the owner's choice in the settings panel (foil 70%, brightness 115%, 26.11.2026)
 // the owner's choice in the settings panel (26.11.2026): foil 160%, CMYK on foil 45%, brightness 80%, SpotUV 95%, finish 145% of the previous values
 export const LOOK = { foil: 1.104, paper: 1.056, uv: 3.09, ink: 0.36, coat: 1.45 };
+// the PDF-in-3D tool: foil a little glossier than in the brochure (the owner's wish, 27.11.2026)
+export const PDF_FOIL = 1.25;
 
 /*
  * The finish over the whole page, from the marker on each page (scripts/brochure-3d.py → finishes.json).
@@ -288,14 +290,15 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
   const [failed, setFailed] = useState(false);
   const [needsTilt, setNeedsTilt] = useState(false);
   // hidden settings panel for the team: only with ?instellen in the address
-  const look = useRef<Look>({ foil: { value: LOOK.foil }, paper: { value: LOOK.paper }, uv: { value: LOOK.uv }, ink: { value: LOOK.ink }, coat: { value: LOOK.coat } });
+  const foilGain = source ? PDF_FOIL : 1;
+  const look = useRef<Look>({ foil: { value: LOOK.foil * foilGain }, paper: { value: LOOK.paper }, uv: { value: LOOK.uv }, ink: { value: LOOK.ink }, coat: { value: LOOK.coat } });
   const [tune, setTune] = useState<null | { foil: number; paper: number; uv: number; ink: number; coat: number }>(null);
   useEffect(() => {
     if (new URLSearchParams(location.search).has("instellen")) setTune({ foil: 100, paper: 100, uv: 100, ink: 100, coat: 100 });
   }, []);
   useEffect(() => {
     if (!tune) return;
-    look.current.foil.value = (LOOK.foil * tune.foil) / 100;
+    look.current.foil.value = (LOOK.foil * foilGain * tune.foil) / 100;
     look.current.paper.value = (LOOK.paper * tune.paper) / 100;
     look.current.uv.value = (LOOK.uv * tune.uv) / 100;
     look.current.ink.value = Math.min(1, (LOOK.ink * tune.ink) / 100);

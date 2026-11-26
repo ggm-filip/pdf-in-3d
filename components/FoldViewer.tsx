@@ -7,7 +7,7 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import gsap from "gsap";
-import { EMBOSS_SCALE, FINISHES, LOOK, pageMaterial, studio, type FinishUniforms, type Look } from "./BrochureViewer";
+import { EMBOSS_SCALE, FINISHES, LOOK, PDF_FOIL, pageMaterial, studio, type FinishUniforms, type Look } from "./BrochureViewer";
 import type { Fold } from "@/lib/pdf3d/fold";
 import { Arrow } from "./Icons";
 
@@ -101,7 +101,7 @@ export default function FoldViewer({ t, map, pbr, emboss, back, width, height, f
     const cx = (width * S) / 2, cy = (height * S) / 2;
     const world = (x: number, y: number) => new THREE.Vector3(x * S - cx, cy - y * S, 0);
 
-    const look: Look = { foil: { value: LOOK.foil }, paper: { value: LOOK.paper }, uv: { value: LOOK.uv }, ink: { value: LOOK.ink }, coat: { value: LOOK.coat } };
+    const look: Look = { foil: { value: LOOK.foil * PDF_FOIL }, paper: { value: LOOK.paper }, uv: { value: LOOK.uv }, ink: { value: LOOK.ink }, coat: { value: LOOK.coat } };
     const f0 = FINISHES[finish ?? "none"] ?? FINISHES.none;
     const fu: FinishUniforms = { coat: { value: f0.coat }, coatRough: { value: f0.coatRough }, foilRough: { value: f0.foilRough }, haze: { value: f0.haze } };
     finishU.current = fu;

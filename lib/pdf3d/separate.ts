@@ -11,6 +11,7 @@
  */
 import type * as Mu from "mupdf";
 import INK_NAMES from "@/content/pdf3d-inks.json";
+import { inkUse, knockoutInks } from "./overprint";
 
 type MuPDF = typeof Mu;
 export type Ink = "foil" | "gold" | "varnish" | "emboss" | "cut" | "crease";
@@ -94,10 +95,14 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
   const cache = new Map<string, string[] | null>();
   const seen = new Set<string>();
   const cut: Seg[] = [], crease: Seg[] = [];
+  // foil that does not overprint knocks out the print under it (read from the PDF's graphics states)
+  const knock = new Set([...knockoutInks(inkUse(page))].map(norm));
 
   const run = (pass: Pass, pix: Mu.Pixmap) => {
     const dev = new mu.DrawDevice(ctm, pix);
     let maskDepth = 0;
+    const blends: boolean[] = []; // open groups: true when one blends (Multiply...), then nothing knocks out
+    let blending = 0;
     const unown = (o: object) => (o.constructor as unknown as { _finalizer?: FinalizationRegistry<unknown> })._finalizer?.unregister(o);
     // decides how to draw something in this colour: calls draw() with the colour to use, or not at all
     const white = (cs: Mu.ColorSpace, color: number[], names: string[] | null) => {
@@ -124,7 +129,9 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
         const v = [0, 0, 0, 0];
         let any = false;
         names.forEach((n, i) => { const j = PROCESS.indexOf(n.toLowerCase()); if (j >= 0 && color[i] > 0) { v[j] = color[i]; any = true; } });
-        if (any) draw(mu.ColorSpace.DeviceCMYK, v as Mu.Color);
+        // a foil in knockout leaves bare foil: the print under it is erased (only its own CMYK part stays)
+        const ko = !blending && names.some((n, i) => (kinds[i] === "foil" || kinds[i] === "gold") && color[i] > 0 && knock.has(norm(n)));
+        if (any || ko) draw(mu.ColorSpace.DeviceCMYK, v as Mu.Color);
         return;
       }
       let t = 0;
@@ -178,7 +185,16 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
         if (maskDepth) return dev.fillShade(sh, m, al);
         const names = inks(shadeSpace(sh), cache);
         const kinds = names?.map(inkOf) ?? [];
-        if (pass === "print") { if (!kinds.some(Boolean)) dev.fillShade(sh, m, al); else names!.forEach((n) => { if (inkOf(n)) seen.add(n); }); return; }
+        if (pass === "print") {
+          if (!kinds.some(Boolean)) { dev.fillShade(sh, m, al); return; }
+          names!.forEach((n) => { if (inkOf(n)) seen.add(n); });
+          // a foil gradient in knockout: erase the print in its shape (the clip), like a flat foil
+          if (!blending && names!.some((n, i) => (kinds[i] === "foil" || kinds[i] === "gold") && knock.has(norm(n)))) {
+            const p = new mu.Path(); const b = sh.getBounds(); p.rect(b[0], b[1], b[2], b[3]);
+            dev.fillPath(p, false, m, mu.ColorSpace.DeviceCMYK, [0, 0, 0, 0], al);
+          }
+          return;
+        }
         // a gradient in a special ink: use its shape as the mask (the tint along the gradient is not followed)
         if (kinds.some((k) => k === pass || (pass === "foil" && k === "gold"))) { const p = new mu.Path(); const b = sh.getBounds(); p.rect(b[0], b[1], b[2], b[3]); dev.fillPath(p, false, m, mu.ColorSpace.DeviceGray, [1], al); }
       },
@@ -194,8 +210,15 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
       beginMask: (r, lum, cs, c) => { maskDepth++; dev.beginMask(r, lum, cs, c as Mu.Color); },
       endMask: () => { maskDepth--; dev.endMask(); },
       // in a mask pass every ink is drawn as white on black: blend modes such as Multiply would make it vanish
-      beginGroup: (r, cs, iso, ko, bm, al) => dev.beginGroup(r, cs, iso, ko, pass === "print" || maskDepth ? bm : "Normal", al),
-      endGroup: () => dev.endGroup(),
+      // and a group that blends in CMYK would turn the grey mask into CMYK and back, so black came out as ~12% grey
+      beginGroup: (r, cs, iso, ko, bm, al) => {
+        const b = bm !== "Normal";
+        blends.push(b);
+        if (b) blending++;
+        if (pass === "print" || maskDepth) dev.beginGroup(r, cs, iso, ko, bm, al);
+        else dev.beginGroup(r, mu.ColorSpace.DeviceGray, iso, ko, "Normal", al);
+      },
+      endGroup: () => { if (blends.pop()) blending--; dev.endGroup(); },
       beginTile: (a, v, xs, ys, m, id, doc) => dev.beginTile(a, v, xs, ys, m, id, doc),
       endTile: () => dev.endTile(),
       beginLayer: (n) => dev.beginLayer(n),

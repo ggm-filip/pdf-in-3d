@@ -11,6 +11,7 @@ Nothing is uploaded: everything runs in the visitor's browser.
 
 - `lib/pdf3d/separate.ts`: renders a page per pass through a filter device (print, varnish, gold, foil) and collects die lines.
 - `lib/pdf3d/worker.ts`: the Web Worker that loads MuPDF and renders the pages.
+- `lib/pdf3d/overprint.ts`: reads from the PDF which spot inks overprint; a foil that does not, knocks out the print under it.
 - `lib/pdf3d/fold.ts`: finds the panels and hinges in the dieline and builds the fold tree.
 - `lib/pdf3d/copy-mupdf.mjs`: copies MuPDF's browser files into `public/mupdf/` (postinstall).
 - `components/PdfTool.tsx`, `FoldViewer.tsx`, `BrochureViewer.tsx`, `Icons.tsx`: the React components (Next.js, React 19, three.js, gsap).

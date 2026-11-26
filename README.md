@@ -3,7 +3,7 @@
 Source code of the "PDF in 3D" tool on the website of Grafische Groep Matthys (`/pdf-in-3d/`).
 
 A PDF is read in the browser with [MuPDF.js](https://mupdf.com) 1.28.6 (AGPL-3.0). Every page is split into
-print (CMYK), foil, gold and SpotUV varnish by spot ink name; die lines (cut and crease) are collected as vectors.
+print (CMYK), foil, gold, SpotUV varnish and embossing by spot ink name; die lines (cut and crease) are collected as vectors.
 The result is shown as a 3D brochure, or, when the PDF has a dieline, as a sheet that folds itself (three.js).
 Nothing is uploaded: everything runs in the visitor's browser.
 
@@ -15,6 +15,7 @@ Nothing is uploaded: everything runs in the visitor's browser.
 - `lib/pdf3d/copy-mupdf.mjs`: copies MuPDF's browser files into `public/mupdf/` (postinstall).
 - `components/PdfTool.tsx`, `FoldViewer.tsx`, `BrochureViewer.tsx`, `Icons.tsx`: the React components (Next.js, React 19, three.js, gsap).
 - `lib/tools.ts`: the texts of the tools on the site.
+- `content/pdf3d-inks.json`: the spot ink names that are recognised (foil, gold, SpotUV, embossing, cut, crease); kept up to date in the site's CMS.
 - `app/pdf3d.css`: the styles.
 
 These files are part of a Next.js website; they are published here as the corresponding source under the AGPL.

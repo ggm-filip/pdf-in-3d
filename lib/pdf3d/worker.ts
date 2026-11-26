@@ -9,7 +9,7 @@ import { finishFromText, initShadeSpace, renderPage, type Seg } from "./separate
 
 export type WorkerIn = { file: ArrayBuffer; maxSide: number; maxPages: number };
 export type PageMsg = {
-  type: "page"; index: number; width: number; height: number; map: Blob; pbr: Blob;
+  type: "page"; index: number; width: number; height: number; map: Blob; pbr: Blob; emboss: Blob | null;
   inks: string[]; cut: Seg[]; crease: Seg[]; finish: string | null;
 };
 export type WorkerOut =
@@ -27,12 +27,36 @@ async function toBlob(pix: Mu.Pixmap, type: string): Promise<Blob> {
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = y * st + x * n, o = (y * w + x) * 4;
-      rgba[o] = src[i]; rgba[o + 1] = src[i + 1]; rgba[o + 2] = src[i + 2]; rgba[o + 3] = 255;
+      if (n === 1) rgba[o] = rgba[o + 1] = rgba[o + 2] = src[i];
+      else { rgba[o] = src[i]; rgba[o + 1] = src[i + 1]; rgba[o + 2] = src[i + 2]; }
+      rgba[o + 3] = 255;
     }
   }
   const canvas = new OffscreenCanvas(w, h);
   canvas.getContext("2d")!.putImageData(new ImageData(rgba, w, h), 0, 0);
   return canvas.convertToBlob(type === "image/webp" ? { type, quality: 0.92 } : { type });
+}
+
+/** softens a grey mask (box blur, twice), so an embossing gets sloped edges like a real relief */
+function soften(pix: Mu.Pixmap, r: number) {
+  const w = pix.getWidth(), h = pix.getHeight(), st = pix.getStride();
+  const px = pix.getPixels();
+  const a = new Float32Array(w * h), b = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) a[y * w + x] = px[y * st + x];
+  const pass = (src: Float32Array, dst: Float32Array, dx: number, dy: number) => {
+    const n = 2 * r + 1;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let sum = 0;
+      for (let k = -r; k <= r; k++) {
+        const xx = Math.min(w - 1, Math.max(0, x + k * dx)), yy = Math.min(h - 1, Math.max(0, y + k * dy));
+        sum += src[yy * w + xx];
+      }
+      dst[y * w + x] = sum / n;
+    }
+  };
+  for (let i = 0; i < 2; i++) { pass(a, b, 1, 0); pass(b, a, 0, 1); }
+  const out = pix.getPixels(); // fetched again: wasm memory may have moved
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) out[y * st + x] = a[y * w + x];
 }
 
 let mupdf: typeof Mu | null = null;
@@ -58,15 +82,20 @@ self.onmessage = async (e: MessageEvent<WorkerIn>) => {
       if (r.cut.length > 0) {
         r.print.destroy();
         r.pbr.destroy();
+        r.emboss?.destroy();
         r = renderPage(mu, page, e.data.maxSide, false);
       }
       let finish: string | null = null;
       try { finish = finishFromText(page.toStructuredText("").asText()); } catch { /* no text */ }
-      const [map, pbr] = await Promise.all([toBlob(r.print, "image/webp"), toBlob(r.pbr, "image/png")]);
+      if (r.emboss) soften(r.emboss, Math.max(1, Math.round(e.data.maxSide / 1000)));
+      const [map, pbr, emboss] = await Promise.all([
+        toBlob(r.print, "image/webp"), toBlob(r.pbr, "image/png"), r.emboss ? toBlob(r.emboss, "image/png") : Promise.resolve(null),
+      ]);
       r.print.destroy();
       r.pbr.destroy();
+      r.emboss?.destroy();
       page.destroy();
-      post({ type: "page", index: i, width: r.width, height: r.height, map, pbr, inks: r.inks, cut: r.cut, crease: r.crease, finish });
+      post({ type: "page", index: i, width: r.width, height: r.height, map, pbr, emboss, inks: r.inks, cut: r.cut, crease: r.crease, finish });
     }
     doc.destroy();
     post({ type: "done" });

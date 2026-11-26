@@ -29,6 +29,7 @@ export type BrochureSource = {
   aspect: number; // page height / width
   map: (p: number, small: boolean) => string | null; // the print of page p (1-based)
   pbr: (p: number, small: boolean) => string | null; // R SpotUV, G gold foil, B foil
+  emboss?: (p: number, small: boolean) => string | null; // the embossing as grey (white = raised), if any
   finishes: (string | null)[]; // finish per page (index 0 = page 1)
 };
 
@@ -177,7 +178,15 @@ export const FINISHES: Record<string, Finish> = {
 
 export type FinishUniforms = { [K in keyof Finish]: { value: number } };
 
-export function pageMaterial(map: THREE.Texture, pbr: THREE.Texture, look: Look, finish: FinishUniforms) {
+/** how high an embossing (preeg, about 0.4 mm) looks in the light */
+export const EMBOSS_SCALE = 2.2;
+
+/*
+ * The order of the layers, as on the press and after it: foil, then CMYK and Pantone, then varnish, then the laminate,
+ * and last the external finishes (SpotUV, embossing). So the laminate dulls the foil and the print under it,
+ * but a SpotUV lies on top of it and always shines just as hard; an embossing lifts everything, print and all.
+ */
+export function pageMaterial(map: THREE.Texture, pbr: THREE.Texture, look: Look, finish: FinishUniforms, bump?: THREE.Texture) {
   const m = new THREE.MeshPhysicalMaterial({
     map,
     roughnessMap: pbr,
@@ -190,6 +199,7 @@ export function pageMaterial(map: THREE.Texture, pbr: THREE.Texture, look: Look,
     specularIntensity: 0.25, // paper: only a faint sheen (does not affect the foil)
     envMapIntensity: 1,
   });
+  if (bump) { m.bumpMap = bump; m.bumpScale = EMBOSS_SCALE; }
   m.onBeforeCompile = (s) => {
     s.uniforms.uUvBoost = look.uv;
     s.uniforms.uFoilGain = look.foil;
@@ -246,7 +256,7 @@ diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.), uHaze * uCoatGain);`,
         "material.clearcoatRoughness = max( material.clearcoatRoughness, 0.0525 );",
         `material.clearcoatRoughness = max( material.clearcoatRoughness, 0.0525 );
 bUvMask = material.clearcoat;
-material.clearcoat = max(bUvMask, uCoat * uCoatGain);
+material.clearcoat = mix(uCoat * uCoatGain, 1., bUvMask); // SpotUV: the same gloss over any laminate
 material.clearcoatRoughness = mix(uCoatRough, material.clearcoatRoughness, bUvMask);`,
       );
   };
@@ -363,7 +373,7 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
       const geo = sheetGeometry();
       const mats = [2 * i + 1, 2 * i + 2].map((p) => {
         const f = finishOf(p);
-        return pageMaterial(blankMap, blankPbr, look.current, f);
+        return pageMaterial(blankMap, blankPbr, look.current, f, src.emboss ? blankPbr : undefined);
       });
       const mesh = new THREE.Mesh(geo, mats);
       mesh.castShadow = mesh.receiveShadow = true;
@@ -378,6 +388,7 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
       [2 * i + 1, 2 * i + 2].forEach((p, side) => {
         const m = s.mats[side];
         const mapUrl = p <= PAGES ? src.map(p, small) : null, pbrUrl = p <= PAGES ? src.pbr(p, small) : null;
+        const bumpUrl = p <= PAGES ? src.emboss?.(p, small) ?? null : null;
         // ready once the first pages (up to 4) have their print
         const arrived = () => { if (p <= firstNeed) { firstSeen.add(p); if (firstSeen.size === firstNeed) setReady(true); } };
         if (!mapUrl) { arrived(); return; }
@@ -393,6 +404,10 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
           tx.anisotropy = aniso;
           m.roughnessMap = m.metalnessMap = m.clearcoatMap = tx;
         });
+        if (bumpUrl) loader.load(bumpUrl, (tx) => {
+          if (!s.loaded) return tx.dispose();
+          m.bumpMap = tx;
+        });
       });
     };
     const unloadSheet = (i: number) => {
@@ -402,6 +417,7 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
       s.mats.forEach((m) => {
         if (m.map !== blankMap) m.map?.dispose();
         if (m.roughnessMap !== blankPbr) m.roughnessMap?.dispose();
+        if (m.bumpMap && m.bumpMap !== blankPbr) { m.bumpMap.dispose(); m.bumpMap = blankPbr; }
         m.map = blankMap;
         m.roughnessMap = m.metalnessMap = m.clearcoatMap = blankPbr;
       });

@@ -38,7 +38,7 @@ body:has(.brochure3d) .hdr-bar { background: color-mix(in srgb, var(--paper) 92%
 .pdf3d-note { margin: 12px 0 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
 .pdf3d-error { margin: 14px 0 0; color: #ff8f8f; font-weight: 500; }
 .pdf3d-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px 18px; padding: 0 16px 14px; }
-.pdf3d-tabs { margin: 0; }
+.pdf3d .pdf3d-tabs { margin: 0; flex-wrap: nowrap; } /* .chips has a bottom margin that pushed the other controls down */
 /* the site's chips and buttons, on the dark stage (as .on-dark does) */
 .pdf3d button.btn { border: 0; cursor: pointer; }
 .pdf3d .chips button { background: rgba(255, 255, 255, 0.08); color: var(--on-dark); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16); }
@@ -61,5 +61,7 @@ body:has(.brochure3d) .hdr-bar { background: color-mix(in srgb, var(--paper) 92%
 .pdf3d-slider input::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25), 0 2px 6px rgba(0, 0, 0, 0.3); }
 .pdf3d-slider input::-moz-range-thumb { width: 20px; height: 20px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25), 0 2px 6px rgba(0, 0, 0, 0.3); }
 .pdf3d-slider input:focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; }
-.pdf3d-license { margin: 28px auto 0; max-width: 760px; padding-inline: 16px; text-align: center; color: var(--muted); font-size: 12px; }
+/* the licence line sits at the very bottom of the tool, just above the footer, and stays dark */
+.section.pdf3d { padding-bottom: 18px; }
+.pdf3d-license { margin: clamp(80px, 10vw, 140px) auto 0; max-width: 760px; padding-inline: 16px; text-align: center; color: #3a3a3a; font-size: 12px; }
 .pdf3d-license a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }

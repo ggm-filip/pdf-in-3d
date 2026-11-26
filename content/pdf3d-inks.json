@@ -1,0 +1,8 @@
+{
+  "foil": ["foil", "folie", "coldfoil", "koudfolie", "inlinecoldfoil", "inlinekoudfolie", "silver", "zilver", "silverfoil", "zilverfolie", "cf"],
+  "gold": ["gold", "goud", "goldfoil", "goudfolie"],
+  "spotuv": ["spotuv", "uvspot", "uv", "uvlak", "uvvernis", "spotvarnish", "varnish", "vernis", "lak", "lack"],
+  "emboss": ["emboss", "embossing", "preeg", "preging", "blindpreeg", "blinddruk", "relief", "reliëf"],
+  "cut": ["cadcut", "cut", "cutcontour", "cutline", "kapvorm", "kap", "die", "dieline", "diecut", "stans", "stanslijn", "snij", "snijlijn", "kontur", "trim"],
+  "crease": ["cadcrease", "crease", "creaseline", "rillijn", "ril", "rill", "rilling", "rillung", "fold", "foldline", "vouw", "vouwlijn", "nut"]
+}

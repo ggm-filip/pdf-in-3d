@@ -2,32 +2,35 @@
  * Splits a PDF page into what the 3D viewer needs, with MuPDF.js (runs in the browser, in a worker):
  *   print  the CMYK (and other inks) without foil, SpotUV or die lines, as RGB
  *   pbr    R = SpotUV, G = gold foil, B = all foil (silver + gold)
+ *   emboss the embossing (a relief, never printed), as grey
  *   lines  the cut and crease lines (die line) as line segments, in pixels of the print image
  *
  * MuPDF.js has no separations API, so every drawing call of the page goes through a filter device:
  * the print pass draws everything except the special inks; a mask pass draws only one special ink, as white on black.
- * Spot inks are recognised by name (see NAMES). Ink mixes (DeviceN, e.g. CMYK + foil in one colour) are split per ink.
+ * Spot inks are recognised by name: the list in content/pdf3d-inks.json, which the owner keeps up to date in the CMS. Ink mixes (DeviceN, e.g. CMYK + foil in one colour) are split per ink.
  */
 import type * as Mu from "mupdf";
+import INK_NAMES from "@/content/pdf3d-inks.json";
 
 type MuPDF = typeof Mu;
-export type Ink = "foil" | "gold" | "varnish" | "cut" | "crease";
-type Pass = "print" | "foil" | "gold" | "varnish";
+export type Ink = "foil" | "gold" | "varnish" | "emboss" | "cut" | "crease";
+type Pass = "print" | "foil" | "gold" | "varnish" | "emboss";
 export type Seg = [number, number, number, number];
 
-// spot colour names, compared without case, spaces, "_" or "-"; long names may also be part of a name ("Silverfoil 2")
+// spot colour names (content/pdf3d-inks.json), compared without case, spaces, "_", "-" or "."; a name of 4 or more
+// letters may also be part of a longer name ("gold" finds "Goldfoil 2", "foil" finds "Inline koudfoil")
+const norm = (x: string) => x.toLowerCase().replace(/[\s_\-.]/g, "");
+const list = (k: keyof typeof INK_NAMES) => (INK_NAMES[k] ?? []).map(norm).filter(Boolean);
 const NAMES: Record<Ink, string[]> = {
-  gold: ["goldfoil", "goudfolie", "gold", "goud"],
-  foil: ["foil", "folie", "coldfoil", "koudfolie", "silverfoil", "zilverfolie", "silver", "zilver", "cf"],
-  varnish: ["spotuv", "uv", "uvlak", "varnish", "spotvarnish", "lak", "vernis", "lack"],
-  cut: ["cadcut", "cut", "cutcontour", "cutline", "kapvorm", "kap", "die", "dieline", "diecut", "stans", "stanslijn", "snij", "snijlijn", "kontur", "trim"],
-  crease: ["cadcrease", "crease", "creaseline", "rillijn", "ril", "rill", "rilling", "fold", "foldline", "vouw", "vouwlijn", "nut", "rillung"],
+  foil: list("foil"), gold: list("gold"), varnish: list("spotuv"), emboss: list("emboss"), cut: list("cut"), crease: list("crease"),
 };
-const ORDER: Ink[] = ["cut", "crease", "gold", "varnish", "foil"];
+// die lines first, embossing before gold ("Gold emboss" is an embossing), gold before foil ("Goldfoil" is gold)
+const ORDER: Ink[] = ["cut", "crease", "emboss", "gold", "varnish", "foil"];
 
 export function inkOf(name: string): Ink | null {
-  const n = name.toLowerCase().replace(/[\s_\-.]/g, "");
-  if (["cyan", "magenta", "yellow", "black", "all", "none"].includes(n)) return null; // process inks ("Black" contains "lack")
+  const n = norm(name);
+  // process inks are never special ("Black 2" contains "lack")
+  if (/^(cyan|magenta|yellow|black|process|all|none)/.test(n)) return null;
   for (const ink of ORDER) if (NAMES[ink].includes(n)) return ink;
   for (const ink of ORDER) if (NAMES[ink].some((x) => x.length >= 4 && n.includes(x))) return ink;
   return null;
@@ -67,6 +70,7 @@ export type PageOut = {
   print: Mu.Pixmap; // RGB
   pbr: Mu.Pixmap; // RGB: R SpotUV, G gold, B foil
   inks: string[]; // every spot ink name met on the page
+  emboss: Mu.Pixmap | null; // Gray: the embossing, or null when the page has none
   cut: Seg[]; crease: Seg[];
 };
 
@@ -107,7 +111,7 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
       if (maskDepth) return draw(cs, color as Mu.Color);
       const names = inks(cs, cache);
       // white over a special ink knocks it out (a white mark in the foil leaves bare board), so in a mask pass it erases
-      const knockout = () => { if (pass !== "print" && white(cs, color, names)) draw(mu.ColorSpace.DeviceGray, [0] as unknown as Mu.Color); };
+      const knockout = () => { if (pass !== "print" && pass !== "emboss" && white(cs, color, names)) draw(mu.ColorSpace.DeviceGray, [0] as unknown as Mu.Color); };
       if (!names) { if (pass === "print") draw(cs, color as Mu.Color); else knockout(); return; }
       const kinds = names.map(inkOf);
       if (pass === "print") names.forEach((n) => { if (inkOf(n)) seen.add(n); });
@@ -245,7 +249,14 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) pp[y * ps + x * 3 + ch] = gp[y * gs + x];
     g.destroy();
   }
-  return { width: w, height: h, print, pbr, inks: [...seen], cut, crease };
+  // embossing: only its shape counts (it is blind, the print under it stays as it is)
+  let emboss: Mu.Pixmap | null = null;
+  if (special.includes("emboss")) {
+    emboss = new mu.Pixmap(mu.ColorSpace.DeviceGray, bbox, false);
+    emboss.clear(0);
+    run("emboss", emboss);
+  }
+  return { width: w, height: h, print, pbr, emboss, inks: [...seen], cut, crease };
 }
 
 /** the finish named on a page marker ("Gloss"/"Matt" + "Varnish"/"Laminated"), as in the brochure */

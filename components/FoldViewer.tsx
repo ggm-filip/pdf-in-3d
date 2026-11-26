@@ -7,7 +7,7 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import gsap from "gsap";
-import { FINISHES, LOOK, pageMaterial, studio, type FinishUniforms, type Look } from "./BrochureViewer";
+import { EMBOSS_SCALE, FINISHES, LOOK, pageMaterial, studio, type FinishUniforms, type Look } from "./BrochureViewer";
 import type { Fold } from "@/lib/pdf3d/fold";
 import { Arrow } from "./Icons";
 
@@ -24,7 +24,8 @@ type Props = {
   t: FoldText;
   map: string; // print of the sheet
   pbr: string; // R SpotUV, G gold foil, B foil
-  back: { map: string; pbr: string } | null; // print on the back (the next PDF page), if any
+  emboss?: string | null; // embossing as grey (white = raised), if any
+  back: { map: string; pbr: string; emboss?: string | null } | null; // print on the back (the next PDF page), if any
   width: number; // image size in pixels
   height: number;
   fold: Fold;
@@ -33,7 +34,7 @@ type Props = {
 
 const THICK = 0.0016; // board thickness (front and back face apart)
 
-export default function FoldViewer({ t, map, pbr, back, width, height, fold, finish }: Props) {
+export default function FoldViewer({ t, map, pbr, emboss, back, width, height, fold, finish }: Props) {
   const stage = useRef<HTMLDivElement>(null);
   const state = useRef({ p: 0 }); // fold progress 0 (flat) .. 1 (folded)
   const [progress, setProgress] = useState(0);
@@ -117,9 +118,14 @@ export default function FoldViewer({ t, map, pbr, back, width, height, fold, fin
       return tx;
     };
     let loaded = 0;
-    const need = back ? 4 : 2;
+    let need = back ? 4 : 2;
     const frontMap = tex(map, true), frontPbr = tex(pbr, false);
     const backMap = back ? tex(back.map, true, true) : null, backPbr = back ? tex(back.pbr, false, true) : null;
+    // embossing: raised on the front; on the back the same relief is pressed in (or the back page's own, if only it has one)
+    const frontBump = emboss ? tex(emboss, false) : undefined;
+    const backBump = frontBump ?? (back?.emboss ? tex(back.emboss, false, true) : undefined);
+    if (frontBump) need++;
+    if (!frontBump && backBump) need++;
 
     // panels as nested groups: each turns about its crease, relative to its parent
     const root = new THREE.Group();
@@ -137,9 +143,12 @@ export default function FoldViewer({ t, map, pbr, back, width, height, fold, fin
     fold.panels.forEach((p, i) => {
       const g = new THREE.Group();
       const pivot = p.hinge ? world(p.hinge[0], p.hinge[1]) : new THREE.Vector3();
+      // a box corner turns about the outside of the board, so the printed faces meet on the edge without a slit
+      // (about the middle, the corner opened by half the board thickness and showed the inside)
+      if (p.hinge && fold.packaging) pivot.z = THICK / 2;
       pivots.push(pivot);
       if (p.hinge) {
-        const b = world(p.hinge[2], p.hinge[3]);
+        const b = world(p.hinge[2], p.hinge[3]).setZ(pivot.z);
         const axis = b.clone().sub(pivot).normalize();
         axes.push(axis);
         // fold away from the viewer (behind the sheet), so the print ends up outside
@@ -179,15 +188,16 @@ export default function FoldViewer({ t, map, pbr, back, width, height, fold, fin
         geo.setAttribute("uv", new THREE.Float32BufferAttribute([u0, v0, u1, v0, u1, v1, u0, v1], 2));
         geo.setAttribute("aSpine", new THREE.Float32BufferAttribute([1, 1, 1, 1], 1)); // no spine shading on a flat sheet
         geo.setIndex(facing === 1 ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2]);
-        geo.translate(-pivot.x, -pivot.y, 0);
+        geo.translate(-pivot.x, -pivot.y, -pivot.z);
         return geo;
       };
-      const front = pageMaterial(frontMap, frontPbr, look, fu);
+      const front = pageMaterial(frontMap, frontPbr, look, fu, frontBump);
       front.alphaMap = alpha;
       front.alphaTest = 0.5;
       const backMat = back
-        ? pageMaterial(backMap!, backPbr!, look, fu)
-        : new THREE.MeshStandardMaterial({ color: "#e6e2d8", roughness: 0.92, metalness: 0 });
+        ? pageMaterial(backMap!, backPbr!, look, fu, backBump)
+        : new THREE.MeshStandardMaterial({ color: "#e6e2d8", roughness: 0.92, metalness: 0, bumpMap: backBump ?? null });
+      if (backBump) backMat.bumpScale = frontBump ? -EMBOSS_SCALE : EMBOSS_SCALE;
       backMat.alphaMap = alpha;
       backMat.alphaTest = 0.5;
       // the alpha map is read with the front's uv; on a mirrored back the print is mirrored, the shape is not
@@ -362,7 +372,7 @@ export default function FoldViewer({ t, map, pbr, back, width, height, fold, fin
     };
     // built once per sheet; the finish goes through its uniforms
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [map, pbr, back, width, height, fold]);
+  }, [map, pbr, emboss, back, width, height, fold]);
 
   return (
     <div className="pdf3d-fold">

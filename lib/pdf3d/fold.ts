@@ -32,7 +32,8 @@ export function buildFold(w: number, h: number, cut: Seg[], crease: Seg[]): Fold
   const gw = Math.ceil(w * s) + 1, gh = Math.ceil(h * s) + 1;
   const LINE = -1;
   const lab = new Int32Array(gw * gh); // 0 = free, -1 = line, >0 = area id
-  const stamp = (segs: Seg[]) => {
+  const creaseCell = new Uint8Array(gw * gh); // 1 where a crease line lies
+  const stamp = (segs: Seg[], mark?: Uint8Array) => {
     for (const [x0, y0, x1, y1] of segs) {
       const len = Math.hypot(x1 - x0, y1 - y0) * s;
       const n = Math.max(1, Math.ceil(len * 2));
@@ -41,13 +42,13 @@ export function buildFold(w: number, h: number, cut: Seg[], crease: Seg[]): Fold
         for (let dy = -RAD; dy <= RAD; dy++) for (let dx = -RAD; dx <= RAD; dx++) {
           if (dx * dx + dy * dy > RAD * RAD + 0.5) continue;
           const x = Math.round(cx + dx), y = Math.round(cy + dy);
-          if (x >= 0 && y >= 0 && x < gw && y < gh) lab[y * gw + x] = LINE;
+          if (x >= 0 && y >= 0 && x < gw && y < gh) { lab[y * gw + x] = LINE; if (mark) mark[y * gw + x] = 1; }
         }
       }
     }
   };
   stamp(cut);
-  stamp(crease);
+  stamp(crease, creaseCell);
 
   // areas between the lines
   const areas: { id: number; n: number; x0: number; y0: number; x1: number; y1: number; sx: number; sy: number; edge: boolean }[] = [];
@@ -74,6 +75,17 @@ export function buildFold(w: number, h: number, cut: Seg[], crease: Seg[]): Fold
   const packaging = cut.length > 0;
   const minArea = gw * gh * 0.002;
   const keep = new Set(areas.filter((a) => a.n >= minArea && !(packaging && a.edge)).map((a) => a.id));
+  // small slivers inside the sheet that touch a crease (between a cut and a crease that run close together, or where
+  // creases meet) are board, not holes: they go to the nearest panel like the lines do, so the print runs on under them.
+  // A small piece closed in by cut lines only stays out: that is a real hole (a window, a hang hole).
+  const touchesCrease = new Set<number>();
+  for (let i = 0; i < lab.length; i++) {
+    if (!creaseCell[i]) continue;
+    const x = i % gw;
+    for (const j of [x > 0 ? i - 1 : -1, x < gw - 1 ? i + 1 : -1, i - gw, i + gw]) if (j >= 0 && j < lab.length && lab[j] > 0) touchesCrease.add(lab[j]);
+  }
+  const sliver = new Set(areas.filter((a) => !keep.has(a.id) && !(packaging && a.edge) && touchesCrease.has(a.id)).map((a) => a.id));
+  if (sliver.size) for (let i = 0; i < lab.length; i++) if (sliver.has(lab[i])) lab[i] = LINE;
 
   // hinges: look at both sides of every crease segment
   const at = (x: number, y: number) => {

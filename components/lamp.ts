@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { RectAreaLightUniformsLib } from "three/examples/jsm/lights/RectAreaLightUniformsLib.js";
+import { tf } from "./tuning";
 
 /*
  * The pointer as a lamp: a spot light hangs a little in front of the spot under the pointer (along the view ray),
@@ -10,7 +11,7 @@ import { RectAreaLightUniformsLib } from "three/examples/jsm/lights/RectAreaLigh
 export type LampKind = "off" | "spot" | "day" | "led" | "candle" | "rainbow";
 export type LampSettings = { kind: LampKind; power: number }; // power 0..1
 export const LAMP_KINDS: LampKind[] = ["off", "spot", "day", "led", "candle", "rainbow"];
-export const LAMP_DEFAULT: LampSettings = { kind: "spot", power: 0.7 };
+export const LAMP_DEFAULT: LampSettings = { kind: "day", power: 0.1 }; // the owner's choice (27.11.2026)
 
 type Spec = {
   color: string; // light colour (the rainbow lamp turns through all hues)
@@ -123,8 +124,8 @@ export class PointerLamp {
         if (n.dot(v) < 0) n.negate();
         // not quite a mirror: a little towards the eye, so a face seen at a grazing angle still gets light
         const dir = n.multiplyScalar(2 * n.dot(v)).sub(v).lerp(v, 0.08).normalize();
-        p.addScaledVector(dir, spec.height);
-      } else p.addScaledVector(v, spec.height);
+        p.addScaledVector(dir, spec.height * tf("height"));
+      } else p.addScaledVector(v, spec.height * tf("height"));
       this.pos.lerp(p, k);
       this.placed = true;
     }
@@ -140,7 +141,8 @@ export class PointerLamp {
     L.angle = spec.angle;
     L.penumbra = spec.penumbra;
     // the same brightness on the surface whatever the lamp's height (the light falls off with the distance squared)
-    L.intensity = spec.lux * power * this.active * spec.height * spec.height;
+    const h = spec.height * tf("height");
+    L.intensity = spec.lux * tf("pool") * power * this.active * h * h;
     L.target.position.copy(this.aim);
     L.target.updateMatrixWorld();
     const F = this.face;
@@ -148,11 +150,11 @@ export class PointerLamp {
     F.lookAt(this.aim);
     F.width = F.height = spec.size;
     F.color.copy(L.color);
-    F.intensity = spec.glint * power * this.active;
+    F.intensity = spec.glint * tf("glint") * power * this.active;
     if (this.last === "rainbow") this.glow.style.setProperty("--lamp", `hsl(${Math.round(((time * 0.09) % 1) * 360)} 95% 62%)`);
     else this.glow.style.setProperty("--lamp", spec.color);
     this.glow.style.opacity = String(Math.min(1, this.active * (0.35 + s.power)));
-    return spec.dim * this.active * (0.35 + 0.65 * s.power);
+    return Math.min(0.95, spec.dim * tf("dim") * this.active * (0.35 + 0.65 * s.power));
   }
 
   dispose() {

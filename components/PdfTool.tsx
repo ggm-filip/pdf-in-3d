@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import BrochureViewer, { FINISHES, type BrochureSource, type BrochureText } from "./BrochureViewer";
 import FoldViewer from "./FoldViewer";
 import { Arrow } from "./Icons";
+import TunePanel from "./TunePanel";
 import { LAMP_DEFAULT, LAMP_KINDS, lampCss, type LampSettings } from "./lamp";
 import { buildFold, type Fold } from "@/lib/pdf3d/fold";
 import { inkOf } from "@/lib/pdf3d/separate";
@@ -244,6 +245,7 @@ export default function PdfTool({ t, book }: { t: Pdf3dText; book: BrochureText 
             ) : (
               <BrochureViewer t={book} source={source} bare lamp={lamp} controls={foldSlot} />
             )}
+            <TunePanel />
             </div>
           </>
         )}

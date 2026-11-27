@@ -9,6 +9,7 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import gsap from "gsap";
 import { Arrow } from "./Icons";
+import { tune as live, tf } from "./tuning";
 import { PointerLamp, type LampSettings } from "./lamp";
 
 /*
@@ -160,12 +161,14 @@ function bend(g: THREE.BufferGeometry, H: number, t: number, lag: number, twist:
 
 /* paper, foil and SpotUV in one physical material */
 /* the look: foil = how much the foil reflects, paper = how bright the print looks, uv = SpotUV gloss */
-export type Look = { foil: { value: number }; paper: { value: number }; uv: { value: number }; ink: { value: number }; coat: { value: number } };
+// soft: extra blur on the foil reflection (added to its roughness); holo: how strongly holographic foil colours
+export type Look = { foil: { value: number }; paper: { value: number }; uv: { value: number }; ink: { value: number }; coat: { value: number }; soft?: { value: number }; holo?: { value: number } };
 // foil and paper: the owner's choice in the settings panel (foil 70%, brightness 115%, 26.11.2026)
 // the owner's choice in the settings panel (26.11.2026): foil 160%, CMYK on foil 45%, brightness 80%, SpotUV 95%, finish 145% of the previous values
 export const LOOK = { foil: 1.104, paper: 1.056, uv: 3.09, ink: 0.36, coat: 1.45 };
-// the PDF-in-3D tool: foil glossier than in the brochure (the owner's wish, 26.11.2026 and again 27.11.2026)
-export const PDF_FOIL = 1.4;
+// the PDF-in-3D tool: foil glossier than in the brochure (the owner's wish, 26.11.2026 and again 27.11.2026),
+// then 10% less and with a softer, blurred reflection edge (27.11.2026: 1.4 → 1.26, see tuning.ts "soft")
+export const PDF_FOIL = 1.26;
 
 /*
  * The finish over the whole page, from the marker on each page (scripts/brochure-3d.py → finishes.json).
@@ -229,6 +232,8 @@ export function pageMaterial(map: THREE.Texture, pbr: THREE.Texture, look: Look,
     s.uniforms.uCoatRough = finish.coatRough;
     s.uniforms.uFoilRough = finish.foilRough;
     s.uniforms.uHaze = finish.haze;
+    s.uniforms.uFoilSoft = look.soft ?? { value: 0 };
+    s.uniforms.uHoloMix = look.holo ?? { value: 0.55 };
     s.vertexShader = s.vertexShader
       .replace("#include <common>", "#include <common>\nattribute float aSpine; varying float vSpine; varying vec2 vPageUv;")
       .replace("#include <begin_vertex>", "#include <begin_vertex>\nvSpine = aSpine; vPageUv = uv;");
@@ -236,7 +241,7 @@ export function pageMaterial(map: THREE.Texture, pbr: THREE.Texture, look: Look,
       .replace(
         "#include <common>",
         `#include <common>
-uniform float uUvBoost, uFoilGain, uPaperGain, uInkLift, uCoatGain, uCoat, uCoatRough, uFoilRough, uHaze; float bUvMask; varying float vSpine; varying vec2 vPageUv;
+uniform float uUvBoost, uFoilGain, uPaperGain, uInkLift, uCoatGain, uCoat, uCoatRough, uFoilRough, uHaze, uFoilSoft, uHoloMix; float bUvMask; varying float vSpine; varying vec2 vPageUv;
 #ifdef USE_HOLO
 uniform sampler2D uHolo; uniform mat3 uHoloM;
 #endif
@@ -250,7 +255,7 @@ float bNoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
       .replace(
         "#include <metalnessmap_fragment>",
         `#include <metalnessmap_fragment>
-roughnessFactor = mix(.82, uFoilRough, metalnessFactor);
+roughnessFactor = mix(.82, min(1., uFoilRough + uFoilSoft), metalnessFactor);
 // CMYK on foil: the ink also shows its own colour (like ink on paper), so it stays bright when the foil shines less;
 // bare foil (no ink) stays pure metal
 { vec3 c = diffuseColor.rgb; float ink = 1. - min(c.r, min(c.g, c.b));
@@ -274,7 +279,7 @@ diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.), uHaze * uCoatGain);`,
     vec3 V = normalize(vViewPosition);
     float h = dot(normal, V) * 2.6 + V.x * 1.8 + V.y * 1.2 + dot(vPageUv, vec2(2.4, 1.6)) + bNoise(vPageUv * 220.) * .06;
     vec3 rb = clamp(abs(mod(h * 6. + vec3(0., 4., 2.), 6.) - 3.) - 1., 0., 1.);
-    diffuseColor.rgb *= mix(vec3(1.), mix(vec3(1.), rb, .55) * 1.1, hm);
+    diffuseColor.rgb *= mix(vec3(1.), mix(vec3(1.), rb, uHoloMix) * 1.1, hm);
   }
 }
 #endif`,
@@ -326,7 +331,7 @@ export default function BrochureViewer({ t, source, bare, lamp, controls }: { t:
   const [needsTilt, setNeedsTilt] = useState(false);
   // hidden settings panel for the team: only with ?instellen in the address
   const foilGain = source ? PDF_FOIL : 1;
-  const look = useRef<Look>({ foil: { value: LOOK.foil * foilGain }, paper: { value: LOOK.paper }, uv: { value: LOOK.uv }, ink: { value: LOOK.ink }, coat: { value: LOOK.coat } });
+  const look = useRef<Look>({ foil: { value: LOOK.foil * foilGain }, paper: { value: LOOK.paper }, uv: { value: LOOK.uv }, ink: { value: LOOK.ink }, coat: { value: LOOK.coat }, soft: { value: source ? live.soft : 0 }, holo: { value: 0.55 } });
   const [tune, setTune] = useState<null | { foil: number; paper: number; uv: number; ink: number; coat: number }>(null);
   useEffect(() => {
     if (new URLSearchParams(location.search).has("instellen")) setTune({ foil: 100, paper: 100, uv: 100, ink: 100, coat: 100 });
@@ -659,9 +664,22 @@ export default function BrochureViewer({ t, source, bare, lamp, controls }: { t:
       book.rotation.y = pointer.x * 1.05;
       book.rotation.x = -0.3 + pointer.y * 0.75;
       const dim = torch.update(camera, book, time);
-      key.intensity = 7 * (1 - dim);
-      fill.intensity = 0.55 * (1 - dim);
-      scene.environmentIntensity = Math.max(0.25, 1 - dim * 1.3);
+      // in the PDF tool the hidden settings panel (tuning.ts) works here too; the brochure page keeps its own
+      const T = (k: Parameters<typeof tf>[0]) => (source ? tf(k) : 1);
+      key.intensity = 7 * T("key") * (1 - dim);
+      fill.intensity = 0.55 * T("env") * (1 - dim);
+      scene.environmentIntensity = Math.max(0.25, 1 - dim * 1.3) * T("env");
+      if (source) {
+        renderer.toneMappingExposure = 1.05 * tf("exposure");
+        const L = look.current;
+        L.foil.value = LOOK.foil * foilGain * tf("foil");
+        L.paper.value = LOOK.paper * tf("paper");
+        L.uv.value = LOOK.uv * tf("uv");
+        L.ink.value = Math.min(1, LOOK.ink * tf("ink"));
+        L.coat.value = LOOK.coat * tf("coat");
+        L.soft!.value = live.soft;
+        L.holo!.value = live.holo / 100;
+      }
 
       // the book slides so a closed cover (or back) sits in the middle
       const p = sheets.reduce((a, s) => a + s.t, 0);

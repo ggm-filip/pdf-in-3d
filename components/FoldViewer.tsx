@@ -8,6 +8,7 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import gsap from "gsap";
+import { tune, tf } from "./tuning";
 import { EMBOSS_SCALE, FINISHES, LOOK, PDF_FOIL, pageMaterial, studio, type FinishUniforms, type Look } from "./BrochureViewer";
 import type { Fold } from "@/lib/pdf3d/fold";
 import { Arrow } from "./Icons";
@@ -61,7 +62,8 @@ export default function FoldViewer({ t, map, pbr, emboss, holo, back, mm, width,
   }, [finish]);
 
   // the user's view; the buttons also bring it back: flat = straight on, folded = from above at an angle
-  const viewRef = useRef({ yaw: 0.55, pitch: -0.42, vy: 0, vp: 0 });
+  // (a positive pitch tips the top towards the camera, so you look onto the lid; it was negative: seen from below)
+  const viewRef = useRef({ yaw: 0.55, pitch: 0.42, vy: 0, vp: 0 });
   const animateTo = (to: number) => {
     const d = 1.2 + 2.2 * Math.abs(to - state.current.p);
     gsap.killTweensOf(state.current);
@@ -70,7 +72,7 @@ export default function FoldViewer({ t, map, pbr, emboss, holo, back, mm, width,
     v.vy = v.vp = 0;
     const yaw = to > 0.5 ? 0.55 : 0, turns = Math.round((v.yaw - yaw) / (2 * Math.PI)) * 2 * Math.PI;
     gsap.killTweensOf(v);
-    gsap.to(v, { yaw: yaw + turns, pitch: to > 0.5 ? -0.42 : -0.12, duration: Math.min(d, 1.6), ease: "power2.inOut" });
+    gsap.to(v, { yaw: yaw + turns, pitch: to > 0.5 ? 0.42 : -0.12, duration: Math.min(d, 1.6), ease: "power2.inOut" });
   };
 
   useEffect(() => {
@@ -118,7 +120,7 @@ export default function FoldViewer({ t, map, pbr, emboss, holo, back, mm, width,
     const unit = mm ? 2 / Math.max(mm[0], mm[1]) : 0.0016 / BOARD_MM;
     const THICK = BOARD_MM * unit, BEND = BEND_MM * unit;
 
-    const look: Look = { foil: { value: LOOK.foil * PDF_FOIL }, paper: { value: LOOK.paper }, uv: { value: LOOK.uv }, ink: { value: LOOK.ink }, coat: { value: LOOK.coat } };
+    const look: Look = { foil: { value: LOOK.foil * PDF_FOIL }, paper: { value: LOOK.paper }, uv: { value: LOOK.uv }, ink: { value: LOOK.ink }, coat: { value: LOOK.coat }, soft: { value: tune.soft }, holo: { value: tune.holo / 100 } };
     const f0 = FINISHES[finish ?? "none"] ?? FINISHES.none;
     const fu: FinishUniforms = { coat: { value: f0.coat }, coatRough: { value: f0.coatRough }, foilRough: { value: f0.foilRough }, haze: { value: f0.haze } };
     finishU.current = fu;
@@ -154,8 +156,10 @@ export default function FoldViewer({ t, map, pbr, emboss, holo, back, mm, width,
     const root = new THREE.Group();
     const offset = new THREE.Group(); // keeps the folded object centred
     const turn = new THREE.Group(); // the user's rotation
+    const upright = new THREE.Group(); // stands the folded box on its bottom (see standQ)
     offset.add(root);
-    turn.add(offset);
+    upright.add(offset);
+    turn.add(upright);
     scene.add(turn);
     const groups: THREE.Group[] = [];
     const pivots: THREE.Vector3[] = [];
@@ -396,6 +400,57 @@ export default function FoldViewer({ t, map, pbr, emboss, holo, back, mm, width,
       });
     };
 
+    /*
+     * Which way is up. A folded box is closed at its top and bottom by several panels on top of each other
+     * (lid, dust flaps, bottom flaps), its walls by one each. So after folding, the axis along which the most
+     * panels lie flat is the box's height. Of its two ends, the one with more panels (a crash-lock bottom) is the
+     * bottom; with as many at both ends, the top of the PDF page is up (or, for a tray, the open side).
+     * An open sleeve has nothing across its ends: it stands on the one axis no panel lies across.
+     * While it folds, the box turns gradually from the flat sheet into that standing position.
+     */
+    const standQ = new THREE.Quaternion();
+    const upInfo = { axis: "y", sign: 1, counts: [0, 0, 0], ends: [0, 0] };
+    if (fold.packaging && fold.panels.length > 2) {
+      applyFold(1);
+      root.updateMatrixWorld(true);
+      const toRoot = root.matrixWorld.clone().invert();
+      const rel = new THREE.Matrix4(), rq = new THREE.Quaternion(), rs = new THREE.Vector3(), rp = new THREE.Vector3();
+      const minArea = fold.panels[0].area * 0.03;
+      const axisOf = (n: THREE.Vector3) => {
+        const a = [Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)];
+        const k = a.indexOf(Math.max(...a));
+        return a[k] > 0.9 ? k : -1;
+      };
+      const items = fold.panels.filter((p) => p.area >= minArea).map((p) => {
+        const i = fold.panels.indexOf(p);
+        rel.multiplyMatrices(toRoot, groups[i].matrixWorld);
+        rel.decompose(rp, rq, rs);
+        const k = axisOf(new THREE.Vector3(0, 0, 1).applyQuaternion(rq));
+        const c = world(p.center[0], p.center[1]).sub(pivots[i]).applyMatrix4(rel);
+        return { k, c: [c.x, c.y, c.z] };
+      });
+      const counts = [0, 0, 0];
+      items.forEach((it) => { if (it.k >= 0) counts[it.k]++; });
+      let k = 1; // with a tie: the page's vertical first, then its horizontal, then square to the sheet
+      if (counts[0] > counts[k]) k = 0;
+      if (counts[2] > counts[k]) k = 2;
+      // an open sleeve (no lid, no bottom): no panel lies across its height, so the empty axis is the height
+      const empty = [1, 0, 2].filter((j) => counts[j] === 0);
+      if (empty.length === 1) k = empty[0];
+      const along = items.map((it) => it.c[k]);
+      const mid = (Math.min(...along) + Math.max(...along)) / 2;
+      let plus = 0, minus = 0;
+      items.forEach((it) => { if (it.k === k) { if (it.c[k] > mid) plus++; else minus++; } });
+      const sign = plus < minus ? 1 : plus > minus ? -1 : k === 2 ? -1 : 1;
+      const up = new THREE.Vector3().setComponent(k, sign);
+      if (k === 1 && sign < 0) standQ.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI); // upside down: turn it in its own plane
+      else standQ.setFromUnitVectors(up, new THREE.Vector3(0, 1, 0));
+      Object.assign(upInfo, { axis: "xyz"[k], sign, counts, ends: [minus, plus] });
+      applyFold(0);
+    }
+    if (process.env.NODE_ENV !== "production") (window as unknown as { __foldUp?: typeof upInfo }).__foldUp = upInfo;
+    const noTurn = new THREE.Quaternion();
+
     // camera: keep the whole object in view, centred
     const box = new THREE.Box3();
     const corner = new THREE.Vector3();
@@ -489,17 +544,27 @@ export default function FoldViewer({ t, map, pbr, emboss, holo, back, mm, width,
       scene.environmentRotation.set(light.y * 0.9, -light.x * 1.6, 0);
       key.position.set(-1.6 + light.x * 3, 2.6 - light.y * 2.5, 3.6);
       const dim = torch.update(camera, turn, time);
-      key.intensity = 7 * (1 - dim);
-      hemi.intensity = 0.6 * (1 - dim);
-      scene.environmentIntensity = Math.max(0.25, 1 - dim * 1.3);
+      key.intensity = 7 * tf("key") * (1 - dim);
+      hemi.intensity = 0.6 * tf("env") * (1 - dim);
+      scene.environmentIntensity = Math.max(0.25, 1 - dim * 1.3) * tf("env");
+      renderer.toneMappingExposure = 1.05 * tf("exposure");
+      // the hidden settings panel (tuning.ts)
+      look.foil.value = LOOK.foil * PDF_FOIL * tf("foil");
+      look.paper.value = LOOK.paper * tf("paper");
+      look.uv.value = LOOK.uv * tf("uv");
+      look.ink.value = Math.min(1, LOOK.ink * tf("ink"));
+      look.coat.value = LOOK.coat * tf("coat");
+      look.soft!.value = tune.soft;
+      look.holo!.value = tune.holo / 100;
 
       applyFold(state.current.p);
+      { const p = Math.min(1, Math.max(0, state.current.p)); upright.quaternion.slerpQuaternions(noTurn, standQ, p * p * (3 - 2 * p)); }
       measure();
       offset.position.lerp(center.clone().negate(), camDist === 0 ? 1 : 0.1);
       // as close as possible with every corner of the object inside the frame (as the brochure does)
       turn.updateMatrixWorld(true);
       for (let k = 0; k < 8; k++) {
-        corners[k].set(k & 1 ? box.max.x : box.min.x, k & 2 ? box.max.y : box.min.y, k & 4 ? box.max.z : box.min.z).sub(center).applyMatrix4(turn.matrixWorld);
+        corners[k].set(k & 1 ? box.max.x : box.min.x, k & 2 ? box.max.y : box.min.y, k & 4 ? box.max.z : box.min.z).sub(center).applyMatrix4(upright.matrixWorld);
       }
       let lo = 0.3, hi = Math.max(2, radius * 8);
       for (let k = 0; k < 16; k++) {

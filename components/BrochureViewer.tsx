@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
@@ -8,6 +9,7 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import gsap from "gsap";
 import { Arrow } from "./Icons";
+import { PointerLamp, type LampSettings } from "./lamp";
 
 /*
  * 3D brochure: real pages you can leaf through, with the cold foil and SpotUV from the press files.
@@ -295,7 +297,10 @@ material.clearcoatRoughness = mix(uCoatRough, material.clearcoatRoughness, bUvMa
   return m;
 }
 
-export default function BrochureViewer({ t, source, bare }: { t: BrochureText; source?: BrochureSource; bare?: boolean }) {
+// controls: where the page buttons go (a tool's top bar; null while it is not there yet); below the book without it
+export default function BrochureViewer({ t, source, bare, lamp, controls }: { t: BrochureText; source?: BrochureSource; bare?: boolean; lamp?: LampSettings; controls?: HTMLElement | null }) {
+  const lampRef = useRef<LampSettings>({ kind: "off", power: 0 });
+  lampRef.current = lamp ?? { kind: "off", power: 0 };
   const src = source ?? OWN;
   const PAGES = src.pages;
   const stage = useRef<HTMLDivElement>(null);
@@ -382,6 +387,7 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
     book.add(key, key.target);
     const fill = new THREE.HemisphereLight("#ffffff", "#3a3a40", 0.55);
     scene.add(fill);
+    const torch = new PointerLamp(scene, el, () => lampRef.current);
 
     // pages: sheet i carries page 2i+1 on the front and 2i+2 on the back
     const H = src.aspect * W;
@@ -652,6 +658,10 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
       key.position.set(-1.6 + pointer.x * 3, 2.4 - pointer.y * 2.5, 3.4);
       book.rotation.y = pointer.x * 1.05;
       book.rotation.x = -0.3 + pointer.y * 0.75;
+      const dim = torch.update(camera, book, time);
+      key.intensity = 7 * (1 - dim);
+      fill.intensity = 0.55 * (1 - dim);
+      scene.environmentIntensity = Math.max(0.25, 1 - dim * 1.3);
 
       // the book slides so a closed cover (or back) sits in the middle
       const p = sheets.reduce((a, s) => a + s.t, 0);
@@ -675,6 +685,7 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
 
     return () => {
       cancelAnimationFrame(raf);
+      torch.dispose();
       ro.disconnect();
       io.disconnect();
       window.removeEventListener("deviceorientation", orient);
@@ -703,6 +714,20 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
   const SHEETS = Math.ceil(PAGES / 2);
   const label = turned === 0 ? "1" : turned === SHEETS ? String(PAGES) : `${turned * 2}–${Math.min(PAGES, turned * 2 + 1)}`;
 
+  const pageBar = (
+    <div className="brochure3d-bar">
+      <button type="button" className="brochure3d-btn prev" onClick={() => api.current?.go(-1)} disabled={turned === 0} aria-label={t.prev}>
+        <Arrow />
+      </button>
+      <span className="brochure3d-page">
+        {t.page} {label} / {PAGES}
+      </span>
+      <button type="button" className="brochure3d-btn" onClick={() => api.current?.go(1)} disabled={turned === SHEETS} aria-label={t.next}>
+        <Arrow />
+      </button>
+    </div>
+  );
+
   const body = (
     <>
         <div ref={stage} className="brochure3d-stage" tabIndex={0} aria-label={t.hint}>
@@ -719,17 +744,7 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
           )}
         </div>
         {PAGES > 1 && (<>
-        <div className="brochure3d-bar">
-          <button type="button" className="brochure3d-btn prev" onClick={() => api.current?.go(-1)} disabled={turned === 0} aria-label={t.prev}>
-            <Arrow />
-          </button>
-          <span className="brochure3d-page">
-            {t.page} {label} / {PAGES}
-          </span>
-          <button type="button" className="brochure3d-btn" onClick={() => api.current?.go(1)} disabled={turned === SHEETS} aria-label={t.next}>
-            <Arrow />
-          </button>
-        </div>
+        {controls === undefined ? pageBar : controls && createPortal(pageBar, controls)}
         <p className="brochure3d-hint">{t.hint}</p>
         </>)}
         {tune && (

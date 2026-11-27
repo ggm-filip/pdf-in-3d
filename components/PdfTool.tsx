@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import BrochureViewer, { FINISHES, type BrochureSource, type BrochureText } from "./BrochureViewer";
 import FoldViewer from "./FoldViewer";
 import { Arrow } from "./Icons";
+import { LAMP_DEFAULT, LAMP_KINDS, lampCss, type LampSettings } from "./lamp";
 import { buildFold, type Fold } from "@/lib/pdf3d/fold";
 import { inkOf } from "@/lib/pdf3d/separate";
 import type { PageMsg, WorkerIn, WorkerOut } from "@/lib/pdf3d/worker";
@@ -20,6 +21,51 @@ type Result = { pages: Page[]; total: number; fold: { index: number; fold: Fold;
 
 const MAX_PAGES = 60;
 
+const Bulb = () => (
+  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M9.5 18h5M10.5 21h3M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.1 2.2h5c0-.9.4-1.6 1.1-2.2A6 6 0 0 0 12 3z" />
+  </svg>
+);
+
+/** the lamp under the pointer: which kind, and how strong (on the 3D view, top left) */
+function LampPicker({ t, value, onChange }: { t: Pdf3dText["lamp"]; value: LampSettings; onChange: (v: LampSettings) => void }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const out = (e: PointerEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("pointerdown", out);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("pointerdown", out); document.removeEventListener("keydown", esc); };
+  }, [open]);
+  const pct = Math.round(value.power * 100);
+  return (
+    <div ref={box} className={`lamp-pick${open ? " open" : ""}`}>
+      <button type="button" className="lamp-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <span className={`lamp-swatch${value.kind === "off" ? " off" : ""}`} style={{ ["--lamp" as string]: lampCss(value.kind) }}><Bulb /></span>
+        <span>{t.label}<span className="lamp-now">{t.kinds[value.kind]}</span></span>
+      </button>
+      {open && (
+        <div className="lamp-panel" role="group" aria-label={t.label}>
+          <div className="lamp-kinds">
+            {LAMP_KINDS.map((k) => (
+              <button key={k} type="button" className={value.kind === k ? "on" : ""} aria-pressed={value.kind === k} onClick={() => onChange({ ...value, kind: k })}>
+                <span className={`lamp-swatch${k === "off" ? " off" : ""}`} style={{ ["--lamp" as string]: lampCss(k) }} />
+                {t.kinds[k]}
+              </button>
+            ))}
+          </div>
+          <label className="pdf3d-slider lamp-power" style={{ ["--p" as string]: `${pct}%` }}>
+            <span>{t.power}</span>
+            <input type="range" min={5} max={100} value={Math.max(5, pct)} disabled={value.kind === "off"} onChange={(e) => onChange({ ...value, power: Number(e.target.value) / 100 })} />
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PdfTool({ t, book }: { t: Pdf3dText; book: BrochureText }) {
   const [phase, setPhase] = useState<"idle" | "busy" | "done" | "error">("idle");
   const [message, setMessage] = useState("");
@@ -28,6 +74,16 @@ export default function PdfTool({ t, book }: { t: Pdf3dText; book: BrochureText 
   const [mode, setMode] = useState<"fold" | "book">("fold");
   const [finish, setFinish] = useState<string>("auto");
   const [over, setOver] = useState(false);
+  const [lamp, setLamp] = useState<LampSettings>(LAMP_DEFAULT);
+  const [foldSlot, setFoldSlot] = useState<HTMLSpanElement | null>(null);
+
+  // once a PDF is shown, the page title goes away (it only takes room above the 3D view)
+  useEffect(() => {
+    const on = phase === "done";
+    document.documentElement.classList.toggle("pdf3d-open", on);
+    if (on) window.scrollTo({ top: 0 });
+    return () => document.documentElement.classList.remove("pdf3d-open");
+  }, [phase]);
   const worker = useRef<Worker | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
@@ -153,6 +209,7 @@ export default function PdfTool({ t, book }: { t: Pdf3dText; book: BrochureText 
                   <button type="button" role="tab" className={mode === "book" ? "on" : ""} aria-selected={mode === "book"} onClick={() => setMode("book")}>{t.modeBook}</button>
                 </div>
               )}
+              <span ref={setFoldSlot} className="pdf3d-foldslot" />
               <label className="pdf3d-select">
                 <span>{t.finish}</span>
                 <select value={finish} onChange={(e) => setFinish(e.target.value)}>
@@ -160,12 +217,14 @@ export default function PdfTool({ t, book }: { t: Pdf3dText; book: BrochureText 
                   {Object.keys(FINISHES).map((k) => <option key={k} value={k}>{t.finishes[k] ?? k}</option>)}
                 </select>
               </label>
+              <LampPicker t={t.lamp} value={lamp} onChange={setLamp} />
               <button type="button" className="btn pdf3d-other" onClick={() => { setResult(null); setPhase("idle"); setTimeout(() => input.current?.click(), 0); }}>{t.other}<span className="arr"><Arrow /></span></button>
             </div>
             <p className="pdf3d-found">
               {found.length ? `${t.found}: ${found.join(", ")}` : t.nothing}
               {result.total > result.pages.length && <> {t.tooMany.replace("{n}", String(result.pages.length))}</>}
             </p>
+            <div className="pdf3d-view">
             {mode === "fold" && result.fold ? (
               <FoldViewer
                 t={t.fold}
@@ -179,10 +238,13 @@ export default function PdfTool({ t, book }: { t: Pdf3dText; book: BrochureText 
                 height={result.pages[result.fold.index].height}
                 fold={result.fold.fold}
                 finish={finishFor(result.pages[result.fold.index])}
+                lamp={lamp}
+                controls={foldSlot}
               />
             ) : (
-              <BrochureViewer t={book} source={source} bare />
+              <BrochureViewer t={book} source={source} bare lamp={lamp} controls={foldSlot} />
             )}
+            </div>
           </>
         )}
         <p className="pdf3d-license">{t.license} <a href={t.sourceUrl} target="_blank" rel="noopener">{t.source}</a></p>

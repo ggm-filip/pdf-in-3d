@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
@@ -10,6 +11,7 @@ import gsap from "gsap";
 import { EMBOSS_SCALE, FINISHES, LOOK, PDF_FOIL, pageMaterial, studio, type FinishUniforms, type Look } from "./BrochureViewer";
 import type { Fold } from "@/lib/pdf3d/fold";
 import { Arrow } from "./Icons";
+import { PointerLamp, type LampSettings } from "./lamp";
 
 /*
  * A die-cut sheet (packaging, a folder) in 3D that folds itself along its crease lines.
@@ -32,6 +34,8 @@ type Props = {
   height: number;
   fold: Fold;
   finish: string | null;
+  lamp?: LampSettings; // the pointer as a lamp (components/lamp.ts)
+  controls?: HTMLElement | null; // where the fold button and slider go (the tool's top bar; null while it is not there yet); below the view without it
 };
 
 const BOARD_MM = 0.3; // board thickness
@@ -39,7 +43,9 @@ const BEND_MM = 2; // the width of board that bends round at a crease (a crease 
 const LAYERS = 2; // board-coloured layers between front and back, so a cut edge looks solid
 const CORE_BEHIND = 8; // those layers lose the depth test to any face, so they only show where nothing covers them
 
-export default function FoldViewer({ t, map, pbr, emboss, holo, back, mm, width, height, fold, finish }: Props) {
+export default function FoldViewer({ t, map, pbr, emboss, holo, back, mm, width, height, fold, finish, lamp, controls }: Props) {
+  const lampRef = useRef<LampSettings>({ kind: "off", power: 0 });
+  lampRef.current = lamp ?? { kind: "off", power: 0 };
   const stage = useRef<HTMLDivElement>(null);
   const state = useRef({ p: 0 }); // fold progress 0 (flat) .. 1 (folded)
   const [progress, setProgress] = useState(0);
@@ -99,7 +105,9 @@ export default function FoldViewer({ t, map, pbr, emboss, holo, back, mm, width,
     key.shadow.normalBias = 0.01;
     key.shadow.radius = 5;
     scene.add(key, key.target);
-    scene.add(new THREE.HemisphereLight("#ffffff", "#3a3a40", 0.6));
+    const hemi = new THREE.HemisphereLight("#ffffff", "#3a3a40", 0.6);
+    scene.add(hemi);
+    const torch = new PointerLamp(scene, el, () => lampRef.current);
 
     // the sheet: 2 units along its longest side, centred
     const S = 2 / Math.max(width, height);
@@ -480,6 +488,10 @@ export default function FoldViewer({ t, map, pbr, emboss, holo, back, mm, width,
       light.y += (light.ty - light.y) * 0.08;
       scene.environmentRotation.set(light.y * 0.9, -light.x * 1.6, 0);
       key.position.set(-1.6 + light.x * 3, 2.6 - light.y * 2.5, 3.6);
+      const dim = torch.update(camera, turn, time);
+      key.intensity = 7 * (1 - dim);
+      hemi.intensity = 0.6 * (1 - dim);
+      scene.environmentIntensity = Math.max(0.25, 1 - dim * 1.3);
 
       applyFold(state.current.p);
       measure();
@@ -523,6 +535,7 @@ export default function FoldViewer({ t, map, pbr, emboss, holo, back, mm, width,
 
     return () => {
       cancelAnimationFrame(raf);
+      torch.dispose();
       window.clearInterval(startTimer);
       gsap.killTweensOf(state.current);
       gsap.killTweensOf(viewObj);
@@ -542,25 +555,29 @@ export default function FoldViewer({ t, map, pbr, emboss, holo, back, mm, width,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, pbr, emboss, holo, back, mm, width, height, fold]);
 
+  const bar = (
+    <div className="pdf3d-foldbar">
+      <button type="button" className="btn primary" onMouseDown={(e) => e.preventDefault()} onClick={() => animateTo(progress > 0.5 ? 0 : 1)}>
+        {progress > 0.5 ? t.flat : t.folded}
+        <span className="arr"><Arrow /></span>
+      </button>
+      <label className="pdf3d-slider" style={{ ["--p" as string]: `${Math.round(progress * 100)}%` }}>
+        <span>{t.fold}</span>
+        <input
+          type="range" min={0} max={100} value={Math.round(progress * 100)}
+          onChange={(e) => { gsap.killTweensOf(state.current); state.current.p = Number(e.target.value) / 100; setProgress(state.current.p); }}
+        />
+      </label>
+    </div>
+  );
+
   return (
     <div className="pdf3d-fold">
       <div ref={stage} className="brochure3d-stage" aria-label={t.drag}>
         {!ready && !failed && <p className="brochure3d-status">{t.loading}</p>}
         {failed && <p className="brochure3d-status">{t.noWebgl}</p>}
       </div>
-      <div className="pdf3d-foldbar">
-        <button type="button" className="btn primary" onMouseDown={(e) => e.preventDefault()} onClick={() => animateTo(progress > 0.5 ? 0 : 1)}>
-          {progress > 0.5 ? t.flat : t.folded}
-          <span className="arr"><Arrow /></span>
-        </button>
-        <label className="pdf3d-slider" style={{ ["--p" as string]: `${Math.round(progress * 100)}%` }}>
-          <span>{t.fold}</span>
-          <input
-            type="range" min={0} max={100} value={Math.round(progress * 100)}
-            onChange={(e) => { gsap.killTweensOf(state.current); state.current.p = Number(e.target.value) / 100; setProgress(state.current.p); }}
-          />
-        </label>
-      </div>
+      {controls === undefined ? bar : controls && createPortal(bar, controls)}
       <p className="brochure3d-hint">{t.drag}</p>
     </div>
   );

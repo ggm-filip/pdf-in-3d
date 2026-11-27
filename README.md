@@ -14,6 +14,7 @@ Nothing is uploaded: everything runs in the visitor's browser.
 - `lib/pdf3d/overprint.ts`: reads from the PDF which spot inks overprint; a foil that does not, knocks out the print under it.
 - `lib/pdf3d/fold.ts`: finds the panels and hinges in the dieline and builds the fold tree.
 - `lib/pdf3d/copy-mupdf.mjs`: copies MuPDF's browser files into `public/mupdf/` (postinstall).
+- `components/lamp.ts`: the pointer as a lamp (a spot light plus a lamp with a size at the mirror angle, so the glint on foil sits under the pointer).
 - `components/PdfTool.tsx`, `FoldViewer.tsx`, `BrochureViewer.tsx`, `Icons.tsx`: the React components (Next.js, React 19, three.js, gsap).
 - `lib/tools.ts`: the texts of the tools on the site.
 - `content/pdf3d-inks.json`: the spot ink names that are recognised (foil, gold, SpotUV, embossing, cut, crease); kept up to date in the site's CMS.

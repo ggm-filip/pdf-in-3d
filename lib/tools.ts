@@ -2,6 +2,7 @@ import type { Page, Route } from "./content";
 import { QUOTE } from "./quote";
 import type { BrochureText } from "@/components/BrochureViewer";
 import type { PressText } from "@/components/PressAnimation";
+import type { LampKind } from "@/components/lamp";
 
 /* Interactive tools that are pages of their own: the foil viewer (tool/foil/<lang>) and the quote wizard (tool/offerte/<lang>). */
 
@@ -142,6 +143,7 @@ export type Pdf3dText = {
   notPdf: string; failed: string; tooMany: string; other: string; modeFold: string; modeBook: string;
   finish: string; finishAuto: string; finishes: Record<string, string>; found: string; nothing: string; license: string; source: string; sourceUrl: string;
   fold: { fold: string; flat: string; folded: string; play: string; drag: string; loading: string; noWebgl: string };
+  lamp: { label: string; power: string; kinds: Record<LampKind, string> };
 };
 export const PDF3D: Record<string, Pdf3dText & { path: string; title: string; kicker: string; seoTitle: string; description: string }> = {
   nl: {
@@ -164,6 +166,10 @@ export const PDF3D: Record<string, Pdf3dText & { path: string; title: string; ki
       fold: "Vouwen", flat: "Plat leggen", folded: "Vouwen", play: "Afspelen",
       drag: "Sleep om te draaien. Beweeg je muis om de folie te zien glanzen.",
       loading: "Laden…", noWebgl: "Je browser kan deze 3D-weergave niet tonen.",
+    },
+    lamp: {
+      label: "Lamp", power: "Sterkte",
+      kinds: { off: "Uit", spot: "Halogeenspot", day: "Daglicht", led: "Koele LED", candle: "Kaarslicht", rainbow: "Regenboog" },
     },
   },
 };

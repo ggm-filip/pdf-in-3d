@@ -9,7 +9,7 @@ import { finishFromText, initShadeSpace, renderPage, type Seg } from "./separate
 
 export type WorkerIn = { file: ArrayBuffer; maxSide: number; maxPages: number };
 export type PageMsg = {
-  type: "page"; index: number; width: number; height: number; map: Blob; pbr: Blob; emboss: Blob | null;
+  type: "page"; index: number; width: number; height: number; map: Blob; pbr: Blob; emboss: Blob | null; holo: Blob | null; mm: [number, number];
   inks: string[]; cut: Seg[]; crease: Seg[]; finish: string | null;
 };
 export type WorkerOut =
@@ -83,19 +83,22 @@ self.onmessage = async (e: MessageEvent<WorkerIn>) => {
         r.print.destroy();
         r.pbr.destroy();
         r.emboss?.destroy();
+        r.holo?.destroy();
         r = renderPage(mu, page, e.data.maxSide, false);
       }
       let finish: string | null = null;
       try { finish = finishFromText(page.toStructuredText("").asText()); } catch { /* no text */ }
       if (r.emboss) soften(r.emboss, Math.max(1, Math.round(e.data.maxSide / 1000)));
-      const [map, pbr, emboss] = await Promise.all([
+      const [map, pbr, emboss, holo] = await Promise.all([
         toBlob(r.print, "image/webp"), toBlob(r.pbr, "image/png"), r.emboss ? toBlob(r.emboss, "image/png") : Promise.resolve(null),
+        r.holo ? toBlob(r.holo, "image/png") : Promise.resolve(null),
       ]);
       r.print.destroy();
       r.pbr.destroy();
       r.emboss?.destroy();
+      r.holo?.destroy();
       page.destroy();
-      post({ type: "page", index: i, width: r.width, height: r.height, map, pbr, emboss, inks: r.inks, cut: r.cut, crease: r.crease, finish });
+      post({ type: "page", index: i, width: r.width, height: r.height, map, pbr, emboss, holo, mm: r.mm, inks: r.inks, cut: r.cut, crease: r.crease, finish });
     }
     doc.destroy();
     post({ type: "done" });

@@ -5,7 +5,7 @@
  *   - a crease with a panel on each side is a hinge between them;
  *   - starting from the largest panel, every panel hangs on its parent by one hinge (a tree), so folding a
  *     panel takes its children along.
- * Packaging (with cut lines) folds 90°, a folder (creases only) folds flat (about 180°).
+ * Packaging (with cut lines) folds 90° (closing flaps 91°), a folder (creases only) folds flat (about 180°).
  */
 import type { Seg } from "./separate";
 
@@ -177,6 +177,10 @@ export function buildFold(w: number, h: number, cut: Seg[], crease: Seg[]): Fold
 
   // how far each panel folds; the direction (away from the viewer, so the print ends up outside) is set by the viewer
   const full = packaging ? Math.PI / 2 : Math.PI * 0.985;
-  for (const p of panels) if (p.hinge) p.angle = full;
+  // closing flaps (dust, tuck and glue flaps: the panels at the end of a branch) fold 1° further, so they end at
+  // 89° to the panel they hang on and stay inside the box instead of showing through a wall or the lid
+  const hasChild = new Set(panels.map((p) => p.parent));
+  const FLAP = (Math.PI / 180) * 1;
+  panels.forEach((p, i) => { if (p.hinge) p.angle = full + (packaging && !hasChild.has(i) ? FLAP : 0); });
   return { panels, packaging };
 }

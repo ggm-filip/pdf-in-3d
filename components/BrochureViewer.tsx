@@ -30,6 +30,7 @@ export type BrochureSource = {
   map: (p: number, small: boolean) => string | null; // the print of page p (1-based)
   pbr: (p: number, small: boolean) => string | null; // R SpotUV, G gold foil, B foil
   emboss?: (p: number, small: boolean) => string | null; // the embossing as grey (white = raised), if any
+  holo?: (p: number, small: boolean) => string | null; // the holographic foil as grey, if any
   finishes: (string | null)[]; // finish per page (index 0 = page 1)
 };
 
@@ -161,8 +162,8 @@ export type Look = { foil: { value: number }; paper: { value: number }; uv: { va
 // foil and paper: the owner's choice in the settings panel (foil 70%, brightness 115%, 26.11.2026)
 // the owner's choice in the settings panel (26.11.2026): foil 160%, CMYK on foil 45%, brightness 80%, SpotUV 95%, finish 145% of the previous values
 export const LOOK = { foil: 1.104, paper: 1.056, uv: 3.09, ink: 0.36, coat: 1.45 };
-// the PDF-in-3D tool: foil a little glossier than in the brochure (the owner's wish, 27.11.2026)
-export const PDF_FOIL = 1.25;
+// the PDF-in-3D tool: foil glossier than in the brochure (the owner's wish, 26.11.2026 and again 27.11.2026)
+export const PDF_FOIL = 1.4;
 
 /*
  * The finish over the whole page, from the marker on each page (scripts/brochure-3d.py → finishes.json).
@@ -188,7 +189,16 @@ export const EMBOSS_SCALE = 2.2;
  * and last the external finishes (SpotUV, embossing). So the laminate dulls the foil and the print under it,
  * but a SpotUV lies on top of it and always shines just as hard; an embossing lifts everything, print and all.
  */
-export function pageMaterial(map: THREE.Texture, pbr: THREE.Texture, look: Look, finish: FinishUniforms, bump?: THREE.Texture) {
+/** sets (or swaps) the holographic foil mask of a page material made with a `holo` texture */
+export function setHolo(m: THREE.Material, tx: THREE.Texture) {
+  const u = m.userData as { holo?: { value: THREE.Texture }; holoM?: { value: THREE.Matrix3 } };
+  if (!u.holo || !u.holoM) return;
+  tx.updateMatrix();
+  u.holo.value = tx;
+  u.holoM.value.copy(tx.matrix);
+}
+
+export function pageMaterial(map: THREE.Texture, pbr: THREE.Texture, look: Look, finish: FinishUniforms, bump?: THREE.Texture, holo?: THREE.Texture) {
   const m = new THREE.MeshPhysicalMaterial({
     map,
     roughnessMap: pbr,
@@ -202,7 +212,12 @@ export function pageMaterial(map: THREE.Texture, pbr: THREE.Texture, look: Look,
     envMapIntensity: 1,
   });
   if (bump) { m.bumpMap = bump; m.bumpScale = EMBOSS_SCALE; }
+  // holographic foil: a rainbow that moves with the light and the viewing angle
+  const holoU = { holo: { value: holo ?? null }, holoM: { value: new THREE.Matrix3() } };
+  if (holo) { const d = m as unknown as { defines?: Record<string, string> }; d.defines = { ...d.defines, USE_HOLO: "" }; m.userData.holo = holoU.holo; m.userData.holoM = holoU.holoM; setHolo(m, holo); }
   m.onBeforeCompile = (s) => {
+    s.uniforms.uHolo = holoU.holo;
+    s.uniforms.uHoloM = holoU.holoM;
     s.uniforms.uUvBoost = look.uv;
     s.uniforms.uFoilGain = look.foil;
     s.uniforms.uPaperGain = look.paper;
@@ -220,6 +235,9 @@ export function pageMaterial(map: THREE.Texture, pbr: THREE.Texture, look: Look,
         "#include <common>",
         `#include <common>
 uniform float uUvBoost, uFoilGain, uPaperGain, uInkLift, uCoatGain, uCoat, uCoatRough, uFoilRough, uHaze; float bUvMask; varying float vSpine; varying vec2 vPageUv;
+#ifdef USE_HOLO
+uniform sampler2D uHolo; uniform mat3 uHoloM;
+#endif
 float bHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float bNoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
   return mix(mix(bHash(i), bHash(i+vec2(1,0)), f.x), mix(bHash(i+vec2(0,1)), bHash(i+vec2(1,1)), f.x), f.y); }`,
@@ -245,7 +263,19 @@ diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.), uHaze * uCoatGain);`,
         `#include <normal_fragment_maps>
 { float fm = texture2D(roughnessMap, vRoughnessMapUv).b;
   vec2 w = vec2(bNoise(vPageUv * vec2(4., 5.6)), bNoise(vPageUv * vec2(5., 3.5) + 9.)) - .5;
-  normal = normalize(normal + fm * vec3(w * .09, 0.)); }`,
+  normal = normalize(normal + fm * vec3(w * .09, 0.)); }
+#ifdef USE_HOLO
+// holographic foil: the colour of the metal runs through the rainbow with the angle to the viewer and across the
+// foil (fine bands), so it changes colour as the sheet turns
+{ float hm = texture2D(uHolo, (uHoloM * vec3(vPageUv, 1.)).xy).r;
+  if (hm > .002) {
+    vec3 V = normalize(vViewPosition);
+    float h = dot(normal, V) * 2.6 + V.x * 1.8 + V.y * 1.2 + dot(vPageUv, vec2(2.4, 1.6)) + bNoise(vPageUv * 220.) * .06;
+    vec3 rb = clamp(abs(mod(h * 6. + vec3(0., 4., 2.), 6.) - 3.) - 1., 0., 1.);
+    diffuseColor.rgb *= mix(vec3(1.), mix(vec3(1.), rb, .55) * 1.1, hm);
+  }
+}
+#endif`,
       )
       // SpotUV: a thick, hard gloss, stronger than a thin varnish layer would give
       .replace(
@@ -376,7 +406,7 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
       const geo = sheetGeometry();
       const mats = [2 * i + 1, 2 * i + 2].map((p) => {
         const f = finishOf(p);
-        return pageMaterial(blankMap, blankPbr, look.current, f, src.emboss ? blankPbr : undefined);
+        return pageMaterial(blankMap, blankPbr, look.current, f, src.emboss ? blankPbr : undefined, src.holo ? blankPbr : undefined);
       });
       const mesh = new THREE.Mesh(geo, mats);
       mesh.castShadow = mesh.receiveShadow = true;
@@ -392,6 +422,7 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
         const m = s.mats[side];
         const mapUrl = p <= PAGES ? src.map(p, small) : null, pbrUrl = p <= PAGES ? src.pbr(p, small) : null;
         const bumpUrl = p <= PAGES ? src.emboss?.(p, small) ?? null : null;
+        const holoUrl = p <= PAGES ? src.holo?.(p, small) ?? null : null;
         // ready once the first pages (up to 4) have their print
         const arrived = () => { if (p <= firstNeed) { firstSeen.add(p); if (firstSeen.size === firstNeed) setReady(true); } };
         if (!mapUrl) { arrived(); return; }
@@ -411,6 +442,10 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
           if (!s.loaded) return tx.dispose();
           m.bumpMap = tx;
         });
+        if (holoUrl) loader.load(holoUrl, (tx) => {
+          if (!s.loaded) return tx.dispose();
+          setHolo(m, tx);
+        });
       });
     };
     const unloadSheet = (i: number) => {
@@ -421,6 +456,8 @@ export default function BrochureViewer({ t, source, bare }: { t: BrochureText; s
         if (m.map !== blankMap) m.map?.dispose();
         if (m.roughnessMap !== blankPbr) m.roughnessMap?.dispose();
         if (m.bumpMap && m.bumpMap !== blankPbr) { m.bumpMap.dispose(); m.bumpMap = blankPbr; }
+        const h = (m.userData as { holo?: { value: THREE.Texture } }).holo;
+        if (h && h.value !== blankPbr) { h.value.dispose(); setHolo(m, blankPbr); }
         m.map = blankMap;
         m.roughnessMap = m.metalnessMap = m.clearcoatMap = blankPbr;
       });

@@ -3,6 +3,7 @@
  *   print  the CMYK (and other inks) without foil, SpotUV or die lines, as RGB
  *   pbr    R = SpotUV, G = gold foil, B = all foil (silver + gold)
  *   emboss the embossing (a relief, never printed), as grey
+ *   holo   the holographic foil, as grey (it is in the foil mask too)
  *   lines  the cut and crease lines (die line) as line segments, in pixels of the print image
  *
  * MuPDF.js has no separations API, so every drawing call of the page goes through a filter device:
@@ -14,8 +15,8 @@ import INK_NAMES from "@/content/pdf3d-inks.json";
 import { inkUse, knockoutInks } from "./overprint";
 
 type MuPDF = typeof Mu;
-export type Ink = "foil" | "gold" | "varnish" | "emboss" | "cut" | "crease";
-type Pass = "print" | "foil" | "gold" | "varnish" | "emboss";
+export type Ink = "foil" | "gold" | "holo" | "varnish" | "emboss" | "cut" | "crease";
+type Pass = "print" | "foil" | "gold" | "holo" | "varnish" | "emboss";
 export type Seg = [number, number, number, number];
 
 // spot colour names (content/pdf3d-inks.json), compared without case, spaces, "_", "-" or "."; a name of 4 or more
@@ -23,10 +24,13 @@ export type Seg = [number, number, number, number];
 const norm = (x: string) => x.toLowerCase().replace(/[\s_\-.]/g, "");
 const list = (k: keyof typeof INK_NAMES) => (INK_NAMES[k] ?? []).map(norm).filter(Boolean);
 const NAMES: Record<Ink, string[]> = {
-  foil: list("foil"), gold: list("gold"), varnish: list("spotuv"), emboss: list("emboss"), cut: list("cut"), crease: list("crease"),
+  foil: list("foil"), gold: list("gold"), holo: list("holo"), varnish: list("spotuv"), emboss: list("emboss"), cut: list("cut"), crease: list("crease"),
 };
-// die lines first, embossing before gold ("Gold emboss" is an embossing), gold before foil ("Goldfoil" is gold)
-const ORDER: Ink[] = ["cut", "crease", "emboss", "gold", "varnish", "foil"];
+// die lines first, embossing before gold ("Gold emboss" is an embossing), holographic and gold before foil ("Goldfoil" is gold)
+const ORDER: Ink[] = ["cut", "crease", "emboss", "holo", "gold", "varnish", "foil"];
+// every foil (silver, gold, holographic) is metal: it knocks out and is part of the foil mask
+const metal = (k: Ink | null) => k === "foil" || k === "gold" || k === "holo";
+const inPass = (k: Ink | null, pass: Pass) => k === pass || (pass === "foil" && metal(k));
 
 export function inkOf(name: string): Ink | null {
   const n = norm(name);
@@ -72,6 +76,8 @@ export type PageOut = {
   pbr: Mu.Pixmap; // RGB: R SpotUV, G gold, B foil
   inks: string[]; // every spot ink name met on the page
   emboss: Mu.Pixmap | null; // Gray: the embossing, or null when the page has none
+  holo: Mu.Pixmap | null; // Gray: the holographic foil (also in the foil mask), or null when the page has none
+  mm: [number, number]; // the rendered area in millimetres
   cut: Seg[]; crease: Seg[];
 };
 
@@ -98,6 +104,26 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
   // foil that does not overprint knocks out the print under it (read from the PDF's graphics states)
   const knock = new Set([...knockoutInks(inkUse(page))].map(norm));
 
+  // MuPDF.js only draws colours of 1, 3 or 4 values: a mix of 2 or 5+ inks (DeviceN, e.g. Cyan + Yellow) is converted to CMYK first
+  const converted = new Map<string, number[]>();
+  const drawable = (cs: Mu.ColorSpace, color: number[]): [Mu.ColorSpace, Mu.Color] => {
+    const n = color.length;
+    if (n === 1 || n === 3 || n === 4) return [cs, color as Mu.Color];
+    const key = cs.getName() + "|" + color.map((v) => Math.round(v * 255)).join(",");
+    let out = converted.get(key);
+    if (!out) {
+      const one = new mu.Pixmap(cs, [0, 0, 1, 1], false);
+      const px = one.getPixels();
+      color.forEach((v, i) => { px[i] = Math.round(Math.min(1, Math.max(0, v)) * 255); });
+      const cmyk = one.convertToColorSpace(mu.ColorSpace.DeviceCMYK);
+      out = Array.from(cmyk.getPixels().slice(0, 4), (v) => v / 255);
+      cmyk.destroy();
+      one.destroy();
+      converted.set(key, out);
+    }
+    return [mu.ColorSpace.DeviceCMYK, out as Mu.Color];
+  };
+
   const run = (pass: Pass, pix: Mu.Pixmap) => {
     const dev = new mu.DrawDevice(ctm, pix);
     let maskDepth = 0;
@@ -112,7 +138,8 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
       if (cs.isRGB() || cs.isGray()) return color.every((c) => c >= 1 - eps);
       return false;
     };
-    const paint = (cs: Mu.ColorSpace, color: number[], draw: (cs: Mu.ColorSpace, color: Mu.Color) => void, path?: { p: Mu.Path; ctm: Mu.Matrix }) => {
+    const paint = (cs: Mu.ColorSpace, color: number[], draw0: (cs: Mu.ColorSpace, color: Mu.Color) => void, path?: { p: Mu.Path; ctm: Mu.Matrix }) => {
+      const draw = (c: Mu.ColorSpace, v: Mu.Color) => { const [c2, v2] = drawable(c, v as number[]); draw0(c2, v2); };
       if (maskDepth) return draw(cs, color as Mu.Color);
       const names = inks(cs, cache);
       // white over a special ink knocks it out (a white mark in the foil leaves bare board), so in a mask pass it erases
@@ -130,12 +157,12 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
         let any = false;
         names.forEach((n, i) => { const j = PROCESS.indexOf(n.toLowerCase()); if (j >= 0 && color[i] > 0) { v[j] = color[i]; any = true; } });
         // a foil in knockout leaves bare foil: the print under it is erased (only its own CMYK part stays)
-        const ko = !blending && names.some((n, i) => (kinds[i] === "foil" || kinds[i] === "gold") && color[i] > 0 && knock.has(norm(n)));
+        const ko = !blending && names.some((n, i) => metal(kinds[i]) && color[i] > 0 && knock.has(norm(n)));
         if (any || ko) draw(mu.ColorSpace.DeviceCMYK, v as Mu.Color);
         return;
       }
       let t = 0;
-      kinds.forEach((k, i) => { if (k === pass || (pass === "foil" && k === "gold")) t = Math.max(t, color[i] ?? 0); });
+      kinds.forEach((k, i) => { if (inPass(k, pass)) t = Math.max(t, color[i] ?? 0); });
       if (t > 0) draw(mu.ColorSpace.DeviceGray, [t] as unknown as Mu.Color);
     };
     // an image in an ink mix: build a new image with only the inks of this pass
@@ -152,7 +179,7 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
       const on = out.getNumberOfComponents();
       const pick = pass === "print"
         ? names.map((nm) => PROCESS.indexOf(nm.toLowerCase()))
-        : kinds.map((k) => (k === pass || (pass === "foil" && k === "gold") ? 0 : -1));
+        : kinds.map((k) => (inPass(k, pass) ? 0 : -1));
       const W = src.getWidth(), H = src.getHeight(), ss = src.getStride(), os = out.getStride();
       let anyInk = false;
       for (let y = 0; y < H; y++) {
@@ -189,14 +216,14 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
           if (!kinds.some(Boolean)) { dev.fillShade(sh, m, al); return; }
           names!.forEach((n) => { if (inkOf(n)) seen.add(n); });
           // a foil gradient in knockout: erase the print in its shape (the clip), like a flat foil
-          if (!blending && names!.some((n, i) => (kinds[i] === "foil" || kinds[i] === "gold") && knock.has(norm(n)))) {
+          if (!blending && names!.some((n, i) => metal(kinds[i]) && knock.has(norm(n)))) {
             const p = new mu.Path(); const b = sh.getBounds(); p.rect(b[0], b[1], b[2], b[3]);
             dev.fillPath(p, false, m, mu.ColorSpace.DeviceCMYK, [0, 0, 0, 0], al);
           }
           return;
         }
         // a gradient in a special ink: use its shape as the mask (the tint along the gradient is not followed)
-        if (kinds.some((k) => k === pass || (pass === "foil" && k === "gold"))) { const p = new mu.Path(); const b = sh.getBounds(); p.rect(b[0], b[1], b[2], b[3]); dev.fillPath(p, false, m, mu.ColorSpace.DeviceGray, [1], al); }
+        if (kinds.some((k) => inPass(k, pass))) { const p = new mu.Path(); const b = sh.getBounds(); p.rect(b[0], b[1], b[2], b[3]); dev.fillPath(p, false, m, mu.ColorSpace.DeviceGray, [1], al); }
       },
       fillImage: (img, m, al) => {
         unown(img);
@@ -207,7 +234,7 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
       fillImageMask: (img, m, cs, c, al) => { unown(img); paint(cs, c, (cs2, c2) => dev.fillImageMask(img, m, cs2, c2, al)); },
       clipImageMask: (img, m) => { unown(img); dev.clipImageMask(img, m); },
       popClip: () => dev.popClip(),
-      beginMask: (r, lum, cs, c) => { maskDepth++; dev.beginMask(r, lum, cs, c as Mu.Color); },
+      beginMask: (r, lum, cs, c) => { maskDepth++; const [c2, v2] = drawable(cs, c as number[]); dev.beginMask(r, lum, c2, v2); },
       endMask: () => { maskDepth--; dev.endMask(); },
       // in a mask pass every ink is drawn as white on black: blend modes such as Multiply would make it vanish
       // and a group that blends in CMYK would turn the grey mask into CMYK and back, so black came out as ~12% grey
@@ -263,7 +290,7 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
   const special = [...seen].map(inkOf);
   const passes: [Pass, number][] = [["varnish", 0], ["gold", 1], ["foil", 2]];
   for (const [pass, ch] of passes) {
-    if (!special.some((k) => k === pass || (pass === "foil" && k === "gold"))) continue;
+    if (!special.some((k) => inPass(k, pass))) continue;
     const g = new mu.Pixmap(mu.ColorSpace.DeviceGray, bbox, false);
     g.clear(0);
     run(pass, g);
@@ -279,7 +306,15 @@ export function renderPage(mu: MuPDF, page: Mu.Page, maxSide: number, useTrim = 
     emboss.clear(0);
     run("emboss", emboss);
   }
-  return { width: w, height: h, print, pbr, emboss, inks: [...seen], cut, crease };
+  // holographic foil: its shape, so the viewer can colour that foil like a rainbow
+  let holo: Mu.Pixmap | null = null;
+  if (special.includes("holo")) {
+    holo = new mu.Pixmap(mu.ColorSpace.DeviceGray, bbox, false);
+    holo.clear(0);
+    run("holo", holo);
+  }
+  const mm: [number, number] = [(bw * 25.4) / 72, (bh * 25.4) / 72];
+  return { width: w, height: h, print, pbr, emboss, holo, mm, inks: [...seen], cut, crease };
 }
 
 /** the finish named on a page marker ("Gloss"/"Matt" + "Varnish"/"Laminated"), as in the brochure */

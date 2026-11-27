@@ -3,8 +3,8 @@
 Source code of the "PDF in 3D" tool on the website of Grafische Groep Matthys (`/pdf-in-3d/`).
 
 A PDF is read in the browser with [MuPDF.js](https://mupdf.com) 1.28.6 (AGPL-3.0). Every page is split into
-print (CMYK), foil, gold, SpotUV varnish and embossing by spot ink name; die lines (cut and crease) are collected as vectors.
-The result is shown as a 3D brochure, or, when the PDF has a dieline, as a sheet that folds itself (three.js).
+print (CMYK), foil, gold, holographic foil, SpotUV varnish and embossing by spot ink name; die lines (cut and crease) are collected as vectors.
+The result is shown as a 3D brochure, or, when the PDF has a dieline, as a sheet of 0.3 mm board that folds itself with rounded bends (three.js).
 Nothing is uploaded: everything runs in the visitor's browser.
 
 ## Files

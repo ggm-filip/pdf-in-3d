@@ -174,7 +174,20 @@ export const toolRoutes = (): Route[] => [
   ...Object.entries(BROCHURE).map(([lang, t]) => ({ path: t.path, key: `tool/brochure/${lang}`, lang, kind: "tool" as const })),
   ...Object.entries(FOIL).map(([lang, t]) => ({ path: t.path, key: `tool/foil/${lang}`, lang, kind: "tool" as const })),
   ...Object.entries(QUOTE).map(([lang, t]) => ({ path: t.path, key: `tool/offerte/${lang}`, lang, kind: "tool" as const })),
+  { path: "/packshots-test/", key: "tool/packshots/nl", lang: "nl", kind: "tool" as const },
 ];
+
+/* test page for the 3D packshots (not in the menu, not indexed) */
+function packshotsPage(key: string, lang: string): Page {
+  return {
+    kind: "tool",
+    key,
+    lang,
+    meta: { path: "/packshots-test/", lang: "nl-NL", title: "Packshots in 3D (test)", description: "", canonical: SITE + "/packshots-test/", alternates: [], robots: "noindex, nofollow", jsonLd: [] },
+    hero: { title: "Packshots in 3D", kicker: "Testpagina", subtitle: "", image: null },
+    sections: [],
+  };
+}
 
 const LOCALE: Record<string, string> = { nl: "nl-NL", en: "en-GB", fr: "fr-FR", de: "de-DE" };
 
@@ -245,6 +258,7 @@ export function toolPage(key: string): Page | null {
   if (tool === "press") return pressPage(key, lang);
   if (tool === "offerte") return quotePage(key, lang);
   if (tool === "brochure") return brochurePage(key, lang);
+  if (tool === "packshots") return packshotsPage(key, lang);
   const t = FOIL[lang];
   if (!t) return null;
   return {

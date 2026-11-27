@@ -15,7 +15,7 @@ import type { Pdf3dText } from "@/lib/tools";
  * in a worker, in the browser: the file is never uploaded.
  */
 
-type Page = PageMsg & { mapUrl: string; pbrUrl: string; embossUrl: string | null };
+type Page = PageMsg & { mapUrl: string; pbrUrl: string; embossUrl: string | null; holoUrl: string | null };
 type Result = { pages: Page[]; total: number; fold: { index: number; fold: Fold; back: number | null } | null };
 
 const MAX_PAGES = 60;
@@ -32,7 +32,7 @@ export default function PdfTool({ t, book }: { t: Pdf3dText; book: BrochureText 
   const input = useRef<HTMLInputElement>(null);
 
   // a result's images are given back when the result is replaced; a running worker stops when the page closes
-  useEffect(() => () => result?.pages.forEach((p) => { URL.revokeObjectURL(p.mapUrl); URL.revokeObjectURL(p.pbrUrl); if (p.embossUrl) URL.revokeObjectURL(p.embossUrl); }), [result]);
+  useEffect(() => () => result?.pages.forEach((p) => { URL.revokeObjectURL(p.mapUrl); URL.revokeObjectURL(p.pbrUrl); if (p.embossUrl) URL.revokeObjectURL(p.embossUrl); if (p.holoUrl) URL.revokeObjectURL(p.holoUrl); }), [result]);
   useEffect(() => () => worker.current?.terminate(), []);
 
   const open = async (file: File) => {
@@ -51,7 +51,7 @@ export default function PdfTool({ t, book }: { t: Pdf3dText; book: BrochureText 
       const m = e.data;
       if (m.type === "info") { total = m.total; setCount({ n: 0, total: m.pages }); }
       else if (m.type === "page") {
-        pages[m.index] = { ...m, mapUrl: URL.createObjectURL(m.map), pbrUrl: URL.createObjectURL(m.pbr), embossUrl: m.emboss ? URL.createObjectURL(m.emboss) : null };
+        pages[m.index] = { ...m, mapUrl: URL.createObjectURL(m.map), pbrUrl: URL.createObjectURL(m.pbr), embossUrl: m.emboss ? URL.createObjectURL(m.emboss) : null, holoUrl: m.holo ? URL.createObjectURL(m.holo) : null };
         setCount((c) => ({ ...c, n: m.index + 1 }));
       } else if (m.type === "done") {
         w.terminate();
@@ -95,12 +95,13 @@ export default function PdfTool({ t, book }: { t: Pdf3dText; book: BrochureText 
       map: (p: number) => ps[p - 1]?.mapUrl ?? null,
       pbr: (p: number) => ps[p - 1]?.pbrUrl ?? null,
       emboss: (p: number) => ps[p - 1]?.embossUrl ?? null,
+      holo: (p: number) => ps[p - 1]?.holoUrl ?? null,
     };
   }, [result]);
   const source: BrochureSource | null = pagesSource ? { ...pagesSource, finishes } : null;
   const back = useMemo(() => {
     const b = result?.fold?.back;
-    return b != null && result ? { map: result.pages[b].mapUrl, pbr: result.pages[b].pbrUrl, emboss: result.pages[b].embossUrl } : null;
+    return b != null && result ? { map: result.pages[b].mapUrl, pbr: result.pages[b].pbrUrl, emboss: result.pages[b].embossUrl, holo: result.pages[b].holoUrl } : null;
   }, [result]);
 
   // what was found, by kind of ink
@@ -108,7 +109,7 @@ export default function PdfTool({ t, book }: { t: Pdf3dText; book: BrochureText 
     if (!result) return [];
     const names = new Set<string>();
     result.pages.forEach((p) => p.inks.forEach((n) => names.add(n)));
-    const label: Record<string, string> = { foil: "folie", gold: "goudfolie", varnish: "SpotUV", emboss: "preeg", cut: "kapvorm", crease: "rillijnen" };
+    const label: Record<string, string> = { foil: "folie", gold: "goudfolie", holo: "holografische folie", varnish: "SpotUV", emboss: "preeg", cut: "kapvorm", crease: "rillijnen" };
     return [...names].map((n) => `${n} (${label[inkOf(n) ?? ""] ?? "?"})`);
   }, [result]);
 
@@ -171,6 +172,8 @@ export default function PdfTool({ t, book }: { t: Pdf3dText; book: BrochureText 
                 map={result.pages[result.fold.index].mapUrl}
                 pbr={result.pages[result.fold.index].pbrUrl}
                 emboss={result.pages[result.fold.index].embossUrl}
+                holo={result.pages[result.fold.index].holoUrl}
+                mm={result.pages[result.fold.index].mm}
                 back={back}
                 width={result.pages[result.fold.index].width}
                 height={result.pages[result.fold.index].height}

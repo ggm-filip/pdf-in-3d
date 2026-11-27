@@ -25,16 +25,21 @@ type Props = {
   map: string; // print of the sheet
   pbr: string; // R SpotUV, G gold foil, B foil
   emboss?: string | null; // embossing as grey (white = raised), if any
-  back: { map: string; pbr: string; emboss?: string | null } | null; // print on the back (the next PDF page), if any
+  holo?: string | null; // holographic foil as grey, if any
+  back: { map: string; pbr: string; emboss?: string | null; holo?: string | null } | null; // print on the back (the next PDF page), if any
+  mm?: [number, number]; // the sheet's real size in millimetres
   width: number; // image size in pixels
   height: number;
   fold: Fold;
   finish: string | null;
 };
 
-const THICK = 0.0016; // board thickness (front and back face apart)
+const BOARD_MM = 0.3; // board thickness
+const BEND_MM = 2; // the width of board that bends round at a crease (a crease is a small curve, not a sharp edge)
+const LAYERS = 2; // board-coloured layers between front and back, so a cut edge looks solid
+const CORE_BEHIND = 8; // those layers lose the depth test to any face, so they only show where nothing covers them
 
-export default function FoldViewer({ t, map, pbr, emboss, back, width, height, fold, finish }: Props) {
+export default function FoldViewer({ t, map, pbr, emboss, holo, back, mm, width, height, fold, finish }: Props) {
   const stage = useRef<HTMLDivElement>(null);
   const state = useRef({ p: 0 }); // fold progress 0 (flat) .. 1 (folded)
   const [progress, setProgress] = useState(0);
@@ -100,6 +105,10 @@ export default function FoldViewer({ t, map, pbr, emboss, back, width, height, f
     const S = 2 / Math.max(width, height);
     const cx = (width * S) / 2, cy = (height * S) / 2;
     const world = (x: number, y: number) => new THREE.Vector3(x * S - cx, cy - y * S, 0);
+    const uvOf = (v: THREE.Vector3) => [(v.x + cx) / (S * width), 1 - (cy - v.y) / (S * height)];
+    // real size: the sheet is 2 units long, so 1 mm is 2 / (its longest side in mm)
+    const unit = mm ? 2 / Math.max(mm[0], mm[1]) : 0.0016 / BOARD_MM;
+    const THICK = BOARD_MM * unit, BEND = BEND_MM * unit;
 
     const look: Look = { foil: { value: LOOK.foil * PDF_FOIL }, paper: { value: LOOK.paper }, uv: { value: LOOK.uv }, ink: { value: LOOK.ink }, coat: { value: LOOK.coat } };
     const f0 = FINISHES[finish ?? "none"] ?? FINISHES.none;
@@ -126,6 +135,12 @@ export default function FoldViewer({ t, map, pbr, emboss, back, width, height, f
     const backBump = frontBump ?? (back?.emboss ? tex(back.emboss, false, true) : undefined);
     if (frontBump) need++;
     if (!frontBump && backBump) need++;
+    const frontHolo = holo ? tex(holo, false) : undefined;
+    const backHolo = back?.holo ? tex(back.holo, false, true) : undefined;
+    if (frontHolo) need++;
+    if (backHolo) need++;
+    // the board between the faces (seen at a cut edge)
+    const boardColor = new THREE.Color("#e9e5da");
 
     // panels as nested groups: each turns about its crease, relative to its parent
     const root = new THREE.Group();
@@ -140,12 +155,25 @@ export default function FoldViewer({ t, map, pbr, emboss, back, width, height, f
     const signs: number[] = [];
     const meshes: THREE.Mesh[] = [];
     const materials: THREE.Material[] = [];
+    const bases: THREE.Vector3[] = []; // each group's position when flat
+    // a hinge in sheet units: its line (from p0, along `along`, `len` long) and the direction to the child panel
+    type Hinge = { p0: THREE.Vector3; along: THREE.Vector3; len: number; toChild: THREE.Vector3 };
+    const hinges: (Hinge | null)[] = fold.panels.map((p) => {
+      if (!p.hinge) return null;
+      const p0 = world(p.hinge[0], p.hinge[1]), p1 = world(p.hinge[2], p.hinge[3]);
+      const along = p1.clone().sub(p0);
+      const len = along.length();
+      along.normalize();
+      const c = world(p.center[0], p.center[1]).sub(p0);
+      const toChild = c.sub(along.clone().multiplyScalar(c.dot(along))).setZ(0).normalize();
+      return { p0, along, len, toChild };
+    });
+    // the pivot lies on the outer board face for a box (the printed faces meet on the edge), in the middle for a folder
+    const zPivots = fold.panels.map(() => (fold.packaging ? THICK / 2 : 0));
     fold.panels.forEach((p, i) => {
       const g = new THREE.Group();
       const pivot = p.hinge ? world(p.hinge[0], p.hinge[1]) : new THREE.Vector3();
-      // a box corner turns about the outside of the board, so the printed faces meet on the edge without a slit
-      // (about the middle, the corner opened by half the board thickness and showed the inside)
-      if (p.hinge && fold.packaging) pivot.z = THICK / 2;
+      if (p.hinge) pivot.z = zPivots[i];
       pivots.push(pivot);
       if (p.hinge) {
         const b = world(p.hinge[2], p.hinge[3]).setZ(pivot.z);
@@ -159,19 +187,35 @@ export default function FoldViewer({ t, map, pbr, emboss, back, width, height, f
         signs.push(0);
       }
       g.position.copy(pivot).sub(p.parent >= 0 ? pivots[p.parent] : new THREE.Vector3());
+      bases.push(g.position.clone());
       (p.parent >= 0 ? groups[p.parent] : root).add(g);
       groups.push(g);
 
       // the panel's shape: its mask (grid cells, rows top-down) as an alpha map over the panel's box
       const { w: mw, h: mh, data } = p.mask;
+      const [x0, y0, x1, y1] = p.box;
+      // the board along each of its creases (its own and its children's) bends round: that strip is drawn by the bend,
+      // so the flat panel stops half a bend width before the crease
+      const own = fold.panels.map((q, k) => (k === i || q.parent === i) && q.hinge ? q.hinge : null).filter((h): h is NonNullable<typeof h> => !!h);
+      const cw = (x1 - x0) / mw, ch = (y1 - y0) / mh;
+      // in image pixels; one mask cell less, so panel and bend overlap a little and no slit shows between them
+      const half = Math.max(0, BEND / 2 / S - 1.2 * Math.max(cw, ch));
+      const near = (x: number, y: number) => own.some(([ax, ay, bx, by]) => {
+        const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
+        const t = L2 ? ((x - ax) * dx + (y - ay) * dy) / L2 : 0;
+        if (t < 0 || t > 1) return false;
+        return Math.hypot(ax + t * dx - x, ay + t * dy - y) < half;
+      });
       // three.js reads an alpha map's green channel; rows bottom-up
       const rgba = new Uint8Array(mw * mh * 4);
-      for (let y = 0; y < mh; y++) for (let x = 0; x < mw; x++) rgba[((mh - 1 - y) * mw + x) * 4 + 1] = data[y * mw + x];
+      for (let y = 0; y < mh; y++) for (let x = 0; x < mw; x++) {
+        if (!data[y * mw + x] || near(x0 + (x + 0.5) * cw, y0 + (y + 0.5) * ch)) continue;
+        rgba[((mh - 1 - y) * mw + x) * 4 + 1] = 255;
+      }
       const alpha = new THREE.DataTexture(rgba, mw, mh);
       alpha.magFilter = alpha.minFilter = THREE.LinearFilter;
       alpha.needsUpdate = true;
       textures.push(alpha);
-      const [x0, y0, x1, y1] = p.box;
       const u0 = x0 / width, u1 = x1 / width, v0 = 1 - y1 / height, v1 = 1 - y0 / height;
       // the alpha map uses the same uv as the print: map the panel box onto 0..1
       alpha.repeat.set(1 / (u1 - u0), 1 / (v1 - v0));
@@ -191,39 +235,156 @@ export default function FoldViewer({ t, map, pbr, emboss, back, width, height, f
         geo.translate(-pivot.x, -pivot.y, -pivot.z);
         return geo;
       };
-      const front = pageMaterial(frontMap, frontPbr, look, fu, frontBump);
+      const front = pageMaterial(frontMap, frontPbr, look, fu, frontBump, frontHolo);
       front.alphaMap = alpha;
       front.alphaTest = 0.5;
       const backMat = back
-        ? pageMaterial(backMap!, backPbr!, look, fu, backBump)
+        ? pageMaterial(backMap!, backPbr!, look, fu, backBump, backHolo)
         : new THREE.MeshStandardMaterial({ color: "#e6e2d8", roughness: 0.92, metalness: 0, bumpMap: backBump ?? null });
       if (backBump) backMat.bumpScale = frontBump ? -EMBOSS_SCALE : EMBOSS_SCALE;
       backMat.alphaMap = alpha;
       backMat.alphaTest = 0.5;
+      // the board inside, seen at a cut edge
+      const core = new THREE.MeshStandardMaterial({ color: boardColor, roughness: 0.95, metalness: 0, side: THREE.DoubleSide, alphaMap: alpha, alphaTest: 0.5 });
       // the alpha map is read with the front's uv; on a mirrored back the print is mirrored, the shape is not
-      for (const m of [front, backMat]) {
-        m.polygonOffset = behind > 0;
-        m.polygonOffsetFactor = behind;
-        m.polygonOffsetUnits = behind * 4;
+      for (const m of [front, backMat, core]) {
+        const d = m === core ? behind + CORE_BEHIND : behind;
+        m.polygonOffset = d > 0;
+        m.polygonOffsetFactor = d;
+        m.polygonOffsetUnits = d * 4;
       }
       const mf = new THREE.Mesh(quad(THICK / 2, 1), front);
       const mb = new THREE.Mesh(quad(-THICK / 2, -1), backMat);
       for (const m of [mf, mb]) { m.castShadow = m.receiveShadow = true; g.add(m); meshes.push(m); }
-      materials.push(front, backMat);
+      for (let k = 1; k <= LAYERS; k++) {
+        const mc = new THREE.Mesh(quad(THICK * (k / (LAYERS + 1) - 0.5), 1), core);
+        mc.receiveShadow = true;
+        g.add(mc);
+        meshes.push(mc);
+      }
+      materials.push(front, backMat, core);
     });
+
+    // the bends: at every crease a narrow strip of board curves round (an arc), front and back face plus the edges
+    const SEG = 10;
+    const stripMeshes: THREE.Mesh[] = [];
+    const bends = fold.panels.map((p, i) => {
+      const h = hinges[i];
+      if (!h) return null;
+      const stripFront = pageMaterial(frontMap, frontPbr, look, fu, frontBump, frontHolo);
+      const stripBack = back
+        ? pageMaterial(backMap!, backPbr!, look, fu, backBump, backHolo)
+        : new THREE.MeshStandardMaterial({ color: "#e6e2d8", roughness: 0.92, metalness: 0, bumpMap: backBump ?? null });
+      if (backBump) stripBack.bumpScale = frontBump ? -EMBOSS_SCALE : EMBOSS_SCALE;
+      const stripCore = new THREE.MeshStandardMaterial({ color: boardColor, roughness: 0.95, metalness: 0, side: THREE.DoubleSide });
+      // the bend gives way in depth like its panel does (a closing flap's bend stays behind the wall it lies in);
+      // the board inside gives way more, so it only shows at a real cut edge
+      const behind = 1 + 6 * (1 - Math.min(1, p.area / fold.panels[0].area));
+      for (const m of [stripFront, stripBack, stripCore]) {
+        const d = m === stripCore ? behind + CORE_BEHIND : behind;
+        m.polygonOffset = true;
+        m.polygonOffsetFactor = d;
+        m.polygonOffsetUnits = d * 4;
+      }
+      materials.push(stripFront, stripBack, stripCore);
+      const parentPivot = p.parent >= 0 ? pivots[p.parent] : new THREE.Vector3();
+      const make = (mat: THREE.Material, facing: 1 | -1, n: number) => {
+        // n = vertices across the strip (SEG + 1) by 2 along the crease
+        const pos = new Float32Array(n * 2 * 3), nor = new Float32Array(n * 2 * 3), uv = new Float32Array(n * 2 * 2);
+        const idx: number[] = [];
+        // which way the triangles face depends on the crease's direction
+        const up = new THREE.Vector3().crossVectors(h.toChild, h.along).z > 0 ? 1 : -1;
+        for (let k = 0; k < n - 1; k++) {
+          const a = k * 2, b = a + 1, c = a + 2, d = a + 3;
+          if (facing * up === 1) idx.push(a, c, b, b, c, d); else idx.push(a, b, c, b, d, c);
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute("normal", new THREE.BufferAttribute(nor, 3));
+        geo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+        geo.setAttribute("aSpine", new THREE.Float32BufferAttribute(new Array(n * 2).fill(1), 1));
+        geo.setIndex(idx);
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.frustumCulled = false;
+        mesh.castShadow = mesh.receiveShadow = true;
+        (p.parent >= 0 ? groups[p.parent] : root).add(mesh);
+        stripMeshes.push(mesh);
+        return mesh;
+      };
+      const faces = [make(stripFront, 1, SEG + 1), make(stripBack, -1, SEG + 1)];
+      const cores = Array.from({ length: LAYERS }, () => make(stripCore, 1, SEG + 1));
+      return { h, parentPivot, faces, cores };
+    });
+    const P = new THREE.Vector3(), N = new THREE.Vector3(), Q = new THREE.Vector3();
+    /*
+     * The bend at panel i's crease when it has turned theta: the point (P) and normal (N) of the
+     * board at u (0..1 across the bend), at the pivot height. Returns how far past the crease the panel starts.
+     * A box: the bend is a round corner inside the sharp one, so every wall stays exactly in its plane and the box closes.
+     * A folder (folded nearly flat): the bend rolls the board round, like a spine.
+     */
+    const arcAt = (i: number, theta: number, u: number) => {
+      const h = hinges[i]!;
+      P.copy(h.p0).setZ(zPivots[i]);
+      if (theta < 1e-4) { P.addScaledVector(h.toChild, -BEND / 2 + u * BEND); N.set(0, 0, 1); return BEND / 2; }
+      // a box: the corner is rounded from half a bend before the crease to half a bend after it (where the flat panels
+      // stop), so every panel keeps its exact place; a folder: the board rolls round over the bend's width
+      const r = fold.packaging ? BEND / 2 / Math.tan(theta / 2) : BEND / theta, phi = u * theta;
+      const t = BEND / 2; // where the arc starts, before the crease
+      P.addScaledVector(h.toChild, -t + r * Math.sin(phi)).setZ(P.z - r * (1 - Math.cos(phi)));
+      N.copy(h.toChild).multiplyScalar(Math.sin(phi)).setZ(Math.cos(phi));
+      return t;
+    };
+    const setBend = (i: number, theta: number) => {
+      const b = bends[i];
+      if (!b) return;
+      const { h, parentPivot } = b;
+      const layers: [THREE.Mesh, number][] = [[b.faces[0], THICK / 2], [b.faces[1], -THICK / 2], ...b.cores.map((m, k): [THREE.Mesh, number] => [m, THICK * ((k + 1) / (LAYERS + 1) - 0.5)])];
+      for (const [mesh, z] of layers) {
+        const g = mesh.geometry;
+        const pos = g.attributes.position.array as Float32Array, nor = g.attributes.normal.array as Float32Array, uv = g.attributes.uv.array as Float32Array;
+        const facing = mesh === b.faces[1] ? -1 : 1;
+        for (let k = 0; k <= SEG; k++) {
+          const u = k / SEG;
+          arcAt(i, theta, u);
+          // the face lies `z` from the mid-plane; the arc runs at the pivot height
+          Q.copy(P).addScaledVector(N, z - zPivots[i]).sub(parentPivot);
+          // its print: where this point lies on the flat sheet
+          const flat = h.p0.clone().addScaledVector(h.toChild, -BEND / 2 + u * BEND);
+          for (let e = 0; e < 2; e++) {
+            const j = k * 2 + e;
+            const off = e * h.len;
+            pos[j * 3] = Q.x + h.along.x * off; pos[j * 3 + 1] = Q.y + h.along.y * off; pos[j * 3 + 2] = Q.z;
+            nor[j * 3] = N.x * facing; nor[j * 3 + 1] = N.y * facing; nor[j * 3 + 2] = N.z * facing;
+            const [tu, tv] = uvOf(flat.clone().addScaledVector(h.along, off));
+            uv[j * 2] = tu; uv[j * 2 + 1] = tv;
+          }
+        }
+        g.attributes.position.needsUpdate = true;
+        g.attributes.normal.needsUpdate = true;
+        g.attributes.uv.needsUpdate = true;
+      }
+    };
 
     // the fold: deeper panels start a little later, so it folds in steps
     const maxDepth = Math.max(...fold.panels.map((p) => p.depth));
     const STEP = 0.35;
     const q = new THREE.Quaternion();
+    const tip = new THREE.Vector3();
     const applyFold = (prog: number) => {
       const span = 1 + STEP * (maxDepth - 1);
       fold.panels.forEach((p, i) => {
-        if (!p.hinge) return;
+        const h = hinges[i];
+        if (!p.hinge || !h) return;
         const local = Math.min(1, Math.max(0, prog * span - STEP * (p.depth - 1)));
         const e = local * local * (3 - 2 * local);
-        q.setFromAxisAngle(axes[i], signs[i] * p.angle * e);
+        const theta = p.angle * e;
+        q.setFromAxisAngle(axes[i], signs[i] * theta);
         groups[i].quaternion.copy(q);
+        // the panel starts where the bend ends: the point half a bend past the crease goes to the end of the arc
+        arcAt(i, theta, 1);
+        tip.copy(h.toChild).multiplyScalar(BEND / 2).applyQuaternion(q);
+        groups[i].position.copy(bases[i]).add(P.sub(pivots[i]).sub(tip));
+        setBend(i, theta);
       });
     };
 
@@ -341,6 +502,12 @@ export default function FoldViewer({ t, map, pbr, emboss, back, width, height, f
       camDist = camDist === 0 ? target : camDist + (target - camDist) * (target > camDist ? 0.2 : 0.05);
       camera.position.set(0, 0, camDist);
       camera.lookAt(0, 0, 0);
+      // local development only: window.__foldZoom = { z: 0.15, x: 0.2, y: 0.3 } looks closely at one spot
+      if (process.env.NODE_ENV !== "production") {
+        const dz = (window as unknown as { __foldZoom?: { z: number; x: number; y: number } }).__foldZoom;
+        if (dz) { camera.lookAt(dz.x, dz.y, 0); camera.zoom = 1 / dz.z; camera.updateProjectionMatrix(); }
+        else if (camera.zoom !== 1) { camera.zoom = 1; camera.updateProjectionMatrix(); }
+      }
       composer.render();
     };
     frame();
@@ -362,6 +529,7 @@ export default function FoldViewer({ t, map, pbr, emboss, back, width, height, f
       ro.disconnect();
       io.disconnect();
       meshes.forEach((m) => m.geometry.dispose());
+      stripMeshes.forEach((m) => m.geometry.dispose());
       materials.forEach((m) => m.dispose());
       textures.forEach((x) => x.dispose());
       scene.environment?.dispose();
@@ -372,7 +540,7 @@ export default function FoldViewer({ t, map, pbr, emboss, back, width, height, f
     };
     // built once per sheet; the finish goes through its uniforms
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [map, pbr, emboss, back, width, height, fold]);
+  }, [map, pbr, emboss, holo, back, mm, width, height, fold]);
 
   return (
     <div className="pdf3d-fold">
